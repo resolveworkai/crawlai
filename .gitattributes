@@ -1,0 +1,9 @@
+# Authored by: Mohit Singh
+#
+# Force LF on files that get executed or parsed inside Linux containers, regardless of the
+# checkout platform's line-ending settings. A CRLF shebang line (`#!/bin/sh\r`) crash-loops a
+# container with "no such file or directory" — a real bug hit and fixed in a sibling project;
+# guarding against it here from day 1 rather than rediscovering it after a Docker rebuild.
+*.sh text eol=lf
+Dockerfile text eol=lf
+*.conf text eol=lf

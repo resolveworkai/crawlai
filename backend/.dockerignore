@@ -1,0 +1,9 @@
+api/node_modules
+api/dist
+worker/.venv
+worker/__pycache__
+worker/**/__pycache__
+worker/.pytest_cache
+worker/.ruff_cache
+worker/.mypy_cache
+.git

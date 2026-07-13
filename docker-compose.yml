@@ -1,0 +1,96 @@
+# Authored by: Mohit Singh
+#
+# 2 application images (frontend, backend) + 1 dedicated Postgres instance.
+# `name:` below fully isolates this project's network/volume/container namespace from any
+# other docker-compose project on the same host — see .claude/skills/skills_devops.md.
+
+name: business-scout-ai
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: business-scout-postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-1234}
+      POSTGRES_DB: ${POSTGRES_DB:-master_db_crawler}
+    ports:
+      - "5436:5432"
+    volumes:
+      - business_scout_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-master_db_crawler}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: business-scout-backend
+    environment:
+      NODE_ENV: production
+      PORT: 4000
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-1234}@postgres:5432/${POSTGRES_DB:-master_db_crawler}
+      ENVIRONMENT: production
+      # NODE_ENV=production makes config.ts refuse to boot with the built-in dev-default
+      # secret (see auth/jwt.ts + config.ts) — this is a distinct local-only placeholder, not
+      # that default, so `docker compose up` works out of the box. ⚠️ Rotate before any real
+      # (non-local) deployment — see .claude/skills/skills_security.md.
+      JWT_SECRET: ${JWT_SECRET:-docker-compose-local-only-jwt-secret-rotate-before-real-deploy}
+      # Must match the browser-facing frontend origin — CORS requires an explicit origin
+      # (not "*") because auth uses cookies with credentials:true. See auth/cookies.ts.
+      FRONTEND_ORIGIN: http://localhost:3000
+      # This compose file has no TLS termination (plain http://localhost) — a Secure cookie
+      # is silently dropped by every browser over http://, breaking login with no visible
+      # error. Override to true only once this stack sits behind real HTTPS. See config.ts.
+      COOKIE_SECURE: "false"
+    ports:
+      - "4010:4000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:4000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        # Baked into the client bundle at BUILD time (see Dockerfile) — the browser can't
+        # resolve "backend", it needs the host-mapped port. See .env.example.
+        VITE_API_URL: ${VITE_API_URL:-http://localhost:4010}
+    container_name: business-scout-frontend
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      # Reserved for a future server-side (SSR) use — not consumed by client-side code
+      # (that's VITE_API_URL, a build-arg above, not a runtime env var).
+      BACKEND_URL: http://backend:4000
+    ports:
+      - "3000:3000"
+    depends_on:
+      backend:
+        condition: service_healthy
+
+  # Optional, free local LLM for the Phase 5 AI-extraction tier. Not started by a plain
+  # `docker compose up` — opt in with `docker compose --profile ai up`.
+  ollama:
+    image: ollama/ollama:latest
+    container_name: business-scout-ollama
+    profiles: ["ai"]
+    volumes:
+      - business_scout_ollama_data:/root/.ollama
+    ports:
+      - "11434:11434"
+
+volumes:
+  business_scout_postgres_data:
+  business_scout_ollama_data:

@@ -1,0 +1,16 @@
+node_modules
+dist
+.output
+.vinxi
+pnpm-lock.yaml
+package-lock.json
+bun.lock
+routeTree.gen.ts
+
+# Separate services with their own lint/format configs — never cross-processed from the root
+backend/
+
+# Hand-formatted docs — prettier's markdown table/prose opinions would create noisy diffs
+md/
+.claude/
+*.md

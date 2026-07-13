@@ -1,0 +1,59 @@
+# Authored by: Mohit Singh
+#
+# Runs the same gates locally that CI enforces (.github/workflows/ci.yml), scoped by which
+# codebase's files actually changed, so a frontend-only commit never pays the Python-gate cost
+# and vice versa. Install once: `pip install pre-commit && pre-commit install`.
+
+repos:
+  - repo: local
+    hooks:
+      - id: frontend-lint
+        name: frontend — eslint
+        entry: npm run lint
+        language: system
+        files: ^(src/|eslint\.config\.js|package\.json|tsconfig\.json)
+        exclude: ^backend/
+        pass_filenames: false
+
+      - id: frontend-typecheck
+        name: frontend — tsc --noEmit
+        entry: npm run typecheck
+        language: system
+        files: ^(src/|tsconfig\.json)
+        exclude: ^backend/
+        pass_filenames: false
+
+      - id: backend-api-lint
+        name: backend/api — eslint
+        entry: bash -c 'cd backend/api && npm run lint'
+        language: system
+        files: ^backend/api/
+        pass_filenames: false
+
+      - id: backend-api-typecheck
+        name: backend/api — tsc --noEmit
+        entry: bash -c 'cd backend/api && npm run typecheck'
+        language: system
+        files: ^backend/api/
+        pass_filenames: false
+
+      - id: backend-worker-ruff
+        name: backend/worker — ruff check + format
+        entry: bash -c 'cd backend/worker && PY=.venv/bin/python; [ -f "$PY" ] || PY=.venv/Scripts/python.exe; "$PY" -m ruff check . && "$PY" -m ruff format --check .'
+        language: system
+        files: ^backend/worker/
+        pass_filenames: false
+
+      - id: backend-worker-mypy
+        name: backend/worker — mypy --strict
+        entry: bash -c 'cd backend/worker && PY=.venv/bin/python; [ -f "$PY" ] || PY=.venv/Scripts/python.exe; "$PY" -m mypy business_scout_worker tests'
+        language: system
+        files: ^backend/worker/
+        pass_filenames: false
+
+      - id: authorship-header
+        name: file-authorship header present (soft check)
+        entry: bash scripts/check-authorship.sh
+        language: system
+        types: [text]
+        exclude: ^(backend/worker/\.venv/|node_modules/|.*\.(lock|json|yml|yaml|svg|ico)$|package-lock\.json|routeTree\.gen\.ts|src/components/ui/)

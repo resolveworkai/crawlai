@@ -1,0 +1,14 @@
+node_modules
+dist
+.output
+.vinxi
+.nitro
+.wrangler
+.git
+.claude
+md
+backend
+.venv
+*.md
+.env
+.env.local
