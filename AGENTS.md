@@ -5,8 +5,9 @@
 > Mirrored across `AGENTS.md` and `CLAUDE.md` so the same instructions load in any AI coding environment.
 
 Standalone product. Not part of any other repository. See `CLAUDE.md` for the full architecture, conventions,
-and phase plan. **Before planning new work, read the latest entry in `md/plans/`** — approved plans are the
-project's durable history and every new plan must build on the last one.
+and phase plan — **its "Current status" section is the fastest way to orient in a new session** (what's built,
+what's next, known follow-ups). **Before planning new work, read the latest entry in `md/plans/`** — approved
+plans are the project's durable history and every new plan must build on the last one.
 
 ## Quick facts
 

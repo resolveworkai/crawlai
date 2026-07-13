@@ -39,6 +39,32 @@ frontend (repo root, Dockerfile)  --HTTP/SSE-->  backend (backend/Dockerfile, ON
 Full architecture rationale, the requirement-coverage matrix, the phased build plan, and every design decision:
 **`md/plans/0001-business-scout-ai-crawler.md`** (this project's first approved plan).
 
+## Current status (updated 2026-07-13 — read this first when resuming work)
+
+**Phases 0-3 complete and verified** (`md/plans/README.md` tracks the authoritative phase status).
+The crawler MVP is real and working end-to-end — verified via a live `docker compose` run (login →
+launch a crawl → 64 real Berlin libraries discovered via Overpass and enriched from their real
+websites, no mocking). First commit: `c70b854` on `master`.
+
+- **Phase 0-1**: scaffold, quality gates, full DB schema + migrations, typed data-access both runtimes.
+- **Phase 2**: JWT auth, jobs/businesses/fields/settings/stats/geocode REST API with SSE, all 7
+  frontend screens wired to the real API (zero mock data). Fixed a real bug: cookies shipped
+  `Secure` over the plain-HTTP local `docker-compose.yml`, which silently breaks login in any real
+  browser — see `COOKIE_SECURE` in `backend/api/src/config.ts` and skills_security.md.
+- **Phase 3 (the shippable milestone)**: Overpass discovery (`backend/worker/business_scout_worker/
+  discovery/`), Tier-1 website enrichment (`enrich/`), exact dedupe (`dedupe.py`), the job daemon
+  (`main.py`/`jobs.py`/`pipeline.py` — LISTEN/NOTIFY + atomic claim + pause/cancel/graceful-shutdown).
+  Two real bugs found via the live verification run and fixed (both documented in
+  `skills_backend_python.md`): Overpass rejecting requests without a form-encoded body + User-Agent,
+  and a phone-extraction regex picking up SVG/CSS/script markup noise instead of visible text.
+- **Not started yet**: Phase 4 (Tier-2 Playwright fallback, real phone/address parsing via
+  `phonenumbers`/`pypostal`, fuzzy rapidfuzz dedup) onward — see the plan for the full remaining scope
+  (Phases 4-8: enrichment depth, AI extraction, manual Google enrichment, exports + public API,
+  hardening).
+- **Known follow-up, not yet done**: `supabase/` (CLI config + old Lovable-era migrations) is dead
+  weight left over from the original scaffold — the real schema is `db/migrations/*.sql` via
+  node-pg-migrate. Safe to delete, just hasn't been done.
+
 ## Skills
 
 Canonical conventions live in `.claude/skills/`, indexed at [.claude/skills/README.md](.claude/skills/README.md)
@@ -51,6 +77,27 @@ Canonical conventions live in `.claude/skills/`, indexed at [.claude/skills/READ
 - DevOps: `.claude/skills/skills_devops.md`
 - Security: `.claude/skills/skills_security.md`
 - Efficiency (token/action discipline — read once, apply always): `.claude/skills/skills_efficiency.md`
+
+## API reference (backend/api — all routes, as actually registered)
+
+Every list/single-resource endpoint wraps its payload in a named envelope (`{jobs:[...]}`,
+`{job:{...}}`, etc.) — see `skills_frontend.md` for the full convention and the one exception
+(`/stats/overview`, which returns its shape bare). `requireAuth` is applied **per-route**, never via
+`router.use()` (a verified real bug — see `skills_backend_node.md`).
+
+| Group | Routes |
+|---|---|
+| `/auth` | `POST /login`, `POST /logout`, `GET /me`, `POST /refresh` |
+| `/jobs` | `POST /` (create), `GET /` (list), `GET /:id`, `POST /:id/{pause,resume,retry,cancel}`, `DELETE /:id`, `GET /:id/stream` (SSE), `GET /logs/stream` (SSE, global) |
+| `/businesses` | `GET /` (filter/paginate), `GET /:id`, `DELETE /:id` |
+| `/dynamic-fields` | `GET /`, `POST /`, `PATCH /:id`, `DELETE /:id` |
+| `/settings` | `GET /` (any role), `PATCH /` (admin only) |
+| `/stats` | `GET /overview` (30s server-side cache) |
+| `/geocode` | `GET /?q=` (Nominatim proxy) |
+| `/health` | `GET /` (checks DB) |
+
+Public `/api/v1/*` (Phase 7, not built yet) and `POST /businesses/:id/enrich-google` (Phase 6, not
+built yet) are documented in the plan but don't exist in code today — don't assume they're wired up.
 
 ## Project convention — approved-plan archival (REQUIREMENT)
 
@@ -81,7 +128,7 @@ Lovable (or any other scaffold-generation tool) as author-of-record belongs anyw
 |---|---|
 | Frontend | React 19 + TanStack Start + Vite + Tailwind + shadcn-ui + Leaflet + recharts |
 | Backend API | Node.js + Express + TypeScript (strict) |
-| Backend worker | Python (`mypy --strict`) + psycopg + httpx + Playwright |
+| Backend worker | Python (`mypy --strict`) + psycopg + httpx + selectolax (Playwright is Phase 4, not a dependency yet) |
 | Database | PostgreSQL (dedicated instance) |
 | Discovery | OpenStreetMap / Overpass API (free) |
 | AI extraction | Optional, provider-agnostic (Ollama default/free, or any OpenAI-compatible key) |
