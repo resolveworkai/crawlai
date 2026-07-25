@@ -7,9 +7,14 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { StatusBadge } from "@/components/status-badge";
 import { RequireAuth } from "@/components/require-auth";
-import { useBusinesses, useDeleteBusiness } from "@/hooks/useBusinesses";
+import {
+  useBusinesses,
+  useDeleteBusiness,
+  useEnrichBusinessWithGoogle,
+  useGoogleEnrichmentStatus,
+} from "@/hooks/useBusinesses";
 import { timeAgo } from "@/lib/utils";
-import { Search, ExternalLink, Mail, Phone, Star, Trash2 } from "lucide-react";
+import { Search, ExternalLink, Mail, Phone, Star, Trash2, RefreshCw } from "lucide-react";
 import { toast } from "sonner";
 import type { EnrichmentStatus } from "@/types/api";
 
@@ -42,7 +47,11 @@ function Businesses() {
   const [search, setSearch] = useState("");
   const [status, setStatus] = useState<EnrichmentStatus | undefined>(undefined);
   const [offset, setOffset] = useState(0);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const deleteBusiness = useDeleteBusiness();
+  const enrichWithGoogle = useEnrichBusinessWithGoogle();
+  const { data: googleStatus } = useGoogleEnrichmentStatus();
+  const googleEnrichmentConfigured = googleStatus?.configured ?? false;
 
   const filters = useMemo(
     () => ({
@@ -56,6 +65,39 @@ function Businesses() {
   const { data, isLoading } = useBusinesses(filters);
   const businesses = data?.businesses ?? [];
   const total = data?.total ?? 0;
+
+  function toggleSelected(id: string): void {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  function toggleSelectAllVisible(): void {
+    setSelectedIds((prev) =>
+      prev.size === businesses.length ? new Set() : new Set(businesses.map((b) => b.id)),
+    );
+  }
+
+  function fetchGoogleRating(id: string, name: string): void {
+    enrichWithGoogle.mutate(id, {
+      onError: (err) => toast.error(`${name}: ${err.message}`),
+    });
+  }
+
+  function fetchGoogleRatingsForSelected(): void {
+    for (const id of selectedIds) {
+      const b = businesses.find((biz) => biz.id === id);
+      enrichWithGoogle.mutate(id, {
+        onError: (err) => toast.error(`${b?.name ?? id}: ${err.message}`),
+      });
+    }
+    setSelectedIds(new Set());
+  }
+
+  const columnCount = googleEnrichmentConfigured ? 9 : 8;
 
   return (
     <AppShell
@@ -90,12 +132,34 @@ function Businesses() {
               </button>
             ))}
           </div>
+          {googleEnrichmentConfigured && selectedIds.size > 0 && (
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-8 border-border text-xs"
+              disabled={enrichWithGoogle.isPending}
+              onClick={fetchGoogleRatingsForSelected}
+            >
+              <Star className="mr-1 h-3.5 w-3.5" />
+              Fetch rating ({selectedIds.size})
+            </Button>
+          )}
         </div>
 
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-border bg-muted/30 text-[11px] uppercase tracking-wide text-muted-foreground">
+                {googleEnrichmentConfigured && (
+                  <th className="w-8 px-4 py-2.5">
+                    <input
+                      type="checkbox"
+                      aria-label="Select all visible businesses"
+                      checked={businesses.length > 0 && selectedIds.size === businesses.length}
+                      onChange={toggleSelectAllVisible}
+                    />
+                  </th>
+                )}
                 <th className="px-4 py-2.5 text-left font-medium">Business</th>
                 <th className="px-2 py-2.5 text-left font-medium">Category</th>
                 <th className="px-2 py-2.5 text-left font-medium">Contact</th>
@@ -109,20 +173,30 @@ function Businesses() {
             <tbody className="divide-y divide-border">
               {isLoading && (
                 <tr>
-                  <td colSpan={8} className="px-4 py-8 text-center text-muted-foreground">
+                  <td colSpan={columnCount} className="px-4 py-8 text-center text-muted-foreground">
                     Loading…
                   </td>
                 </tr>
               )}
               {!isLoading && businesses.length === 0 && (
                 <tr>
-                  <td colSpan={8} className="px-4 py-8 text-center text-muted-foreground">
+                  <td colSpan={columnCount} className="px-4 py-8 text-center text-muted-foreground">
                     No businesses yet — launch a crawl from Discover to populate the master DB.
                   </td>
                 </tr>
               )}
               {businesses.map((b) => (
                 <tr key={b.id} className="group transition-colors hover:bg-accent/30">
+                  {googleEnrichmentConfigured && (
+                    <td className="px-4 py-3">
+                      <input
+                        type="checkbox"
+                        aria-label={`Select ${b.name}`}
+                        checked={selectedIds.has(b.id)}
+                        onChange={() => toggleSelected(b.id)}
+                      />
+                    </td>
+                  )}
                   <td className="px-4 py-3">
                     <div className="flex items-center gap-3">
                       <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-gradient-to-br from-primary/20 to-chart-3/20 text-[11px] font-semibold text-primary ring-1 ring-border">
@@ -181,20 +255,34 @@ function Businesses() {
                     {timeAgo(b.updated_at)}
                   </td>
                   <td className="px-4 py-3 text-right">
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="h-7 w-7 text-muted-foreground opacity-0 group-hover:opacity-100 hover:text-destructive"
-                      onClick={() => {
-                        if (confirm(`Delete "${b.name}"? This cannot be undone.`)) {
-                          deleteBusiness.mutate(b.id, {
-                            onError: (err) => toast.error(err.message),
-                          });
-                        }
-                      }}
-                    >
-                      <Trash2 className="h-3.5 w-3.5" />
-                    </Button>
+                    <div className="flex items-center justify-end gap-1 opacity-0 group-hover:opacity-100">
+                      {googleEnrichmentConfigured && (
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-7 w-7 text-muted-foreground hover:text-warning"
+                          title="Fetch Google rating"
+                          disabled={enrichWithGoogle.isPending}
+                          onClick={() => fetchGoogleRating(b.id, b.name)}
+                        >
+                          <RefreshCw className="h-3.5 w-3.5" />
+                        </Button>
+                      )}
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-7 w-7 text-muted-foreground hover:text-destructive"
+                        onClick={() => {
+                          if (confirm(`Delete "${b.name}"? This cannot be undone.`)) {
+                            deleteBusiness.mutate(b.id, {
+                              onError: (err) => toast.error(err.message),
+                            });
+                          }
+                        }}
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </Button>
+                    </div>
                   </td>
                 </tr>
               ))}

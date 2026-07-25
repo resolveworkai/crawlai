@@ -60,5 +60,23 @@ export function useDeleteBusiness() {
   });
 }
 
-// Manual Google enrichment (POST /businesses/:id/enrich-google) is Phase 6 — its hook lands
-// with that endpoint, not before.
+// Phase 6 — manual, per-business Google enrichment (rating/review-count/photos). The button
+// that triggers this is hidden/disabled when `configured` is false (no GOOGLE_API_KEY on the
+// backend) — see useGoogleEnrichmentStatus below and businesses.tsx.
+export function useGoogleEnrichmentStatus() {
+  return useQuery({
+    queryKey: [...businessKeys.all, "google-enrichment-status"] as const,
+    queryFn: () => api.get<{ configured: boolean }>("/businesses/google-enrichment-status"),
+    staleTime: 5 * 60 * 1000, // rarely changes — only on a backend env/config change
+  });
+}
+
+export function useEnrichBusinessWithGoogle() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.post<{ business: Business }>(`/businesses/${id}/enrich-google`),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: businessKeys.all });
+    },
+  });
+}

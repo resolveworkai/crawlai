@@ -17,7 +17,11 @@ def create_pool(settings: Settings) -> AsyncConnectionPool:
     row_factory=dict_row so query results are column-name-keyed dicts, which the pydantic
     models in models.py consume directly via model_validate()."""
     return AsyncConnectionPool(
-        conninfo=settings.database_url, open=False, kwargs={"row_factory": dict_row}
+        conninfo=settings.database_url,
+        open=False,
+        min_size=settings.db_pool_min,
+        max_size=settings.db_pool_max,
+        kwargs={"row_factory": dict_row},
     )
 
 

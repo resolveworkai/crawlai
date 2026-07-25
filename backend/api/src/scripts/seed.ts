@@ -14,21 +14,32 @@ const ADMIN_EMAIL = process.env.SEED_ADMIN_EMAIL ?? "admin@business-scout.local"
 const ADMIN_PASSWORD = process.env.SEED_ADMIN_PASSWORD ?? "change-me-dev-only";
 const BCRYPT_ROUNDS = 10;
 
-async function seedAdminUser(): Promise<void> {
-  const existing = await findUserByEmail(ADMIN_EMAIL);
+async function seedAdminAccount(email: string, password: string, fullName: string): Promise<void> {
+  const existing = await findUserByEmail(email);
   if (existing) {
-    logger.info({ email: ADMIN_EMAIL }, "seed: admin user already exists, skipping create");
+    logger.info({ email }, "seed: admin user already exists, skipping create");
     await assignRole(existing.id, "admin");
     return;
   }
-  const passwordHash = await bcrypt.hash(ADMIN_PASSWORD, BCRYPT_ROUNDS);
-  const user = await createUser({ email: ADMIN_EMAIL, passwordHash, fullName: "Admin" });
+  const passwordHash = await bcrypt.hash(password, BCRYPT_ROUNDS);
+  const user = await createUser({ email, passwordHash, fullName });
   await assignRole(user.id, "admin");
-  logger.info({ email: ADMIN_EMAIL }, "seed: created admin user");
+  logger.info({ email }, "seed: created admin user");
+}
+
+async function seedAdminUser(): Promise<void> {
+  await seedAdminAccount(ADMIN_EMAIL, ADMIN_PASSWORD, "Admin");
   if (!process.env.SEED_ADMIN_PASSWORD) {
     logger.warn(
       "seed: using the default dev-only admin password — set SEED_ADMIN_PASSWORD for anything beyond local dev",
     );
+  }
+
+  // Second, fixed-credential dev admin (requested directly, not env-configurable) — local/dev
+  // only, guarded on NODE_ENV so a mistaken `npm run seed` against a real deployment can never
+  // create an account with a known, hardcoded password.
+  if (process.env.NODE_ENV !== "production") {
+    await seedAdminAccount("admin@admin.com", "Test@123", "Admin");
   }
 }
 
@@ -46,7 +57,8 @@ async function seedDynamicFields(): Promise<void> {
     {
       key: "years_in_business",
       label: "Years in Business",
-      prompt: "How many years has this business been operating? Return an integer, or null if unknown.",
+      prompt:
+        "How many years has this business been operating? Return an integer, or null if unknown.",
       fieldType: "number" as const,
     },
   ];

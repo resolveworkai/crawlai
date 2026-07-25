@@ -88,7 +88,9 @@ describe("GET /businesses", () => {
   });
 
   it("filters by hasEmail", async () => {
-    const res = await viewerAgent.get("/businesses").query({ hasEmail: "true", search: `Res Test Gym` });
+    const res = await viewerAgent
+      .get("/businesses")
+      .query({ hasEmail: "true", search: `Res Test Gym` });
     expect(res.status).toBe(200);
     expect(res.body.businesses.every((b: { email: string | null }) => b.email !== null)).toBe(true);
   });
@@ -199,14 +201,67 @@ describe("GET /stats/overview", () => {
 
 describe("GET /geocode", () => {
   // Single live Nominatim call — respects usage policy.
-  it(
-    "resolves a place name to coordinates",
-    async () => {
-      const res = await viewerAgent.get("/geocode").query({ q: "Paris, France" });
-      expect(res.status).toBe(200);
-      expect(res.body.result.lat).toBeGreaterThan(48);
-      expect(res.body.result.lat).toBeLessThan(49);
-    },
-    15_000,
-  );
+  it("resolves a place name to coordinates", async () => {
+    const res = await viewerAgent.get("/geocode").query({ q: "Paris, France" });
+    expect(res.status).toBe(200);
+    expect(res.body.result.lat).toBeGreaterThan(48);
+    expect(res.body.result.lat).toBeLessThan(49);
+  }, 15_000);
+});
+
+describe("Phase 7 — exports", () => {
+  const createdExportIds: string[] = [];
+
+  afterAll(async () => {
+    if (createdExportIds.length > 0) {
+      await pool.query("DELETE FROM exports WHERE id = ANY($1)", [createdExportIds]);
+    }
+  });
+
+  it("rejects a viewer generating an export (403), allows operator", async () => {
+    const denied = await viewerAgent.post("/exports").send({ format: "csv" });
+    expect(denied.status).toBe(403);
+
+    const allowed = await operatorAgent
+      .post("/exports")
+      .send({ format: "csv", search: `Res Test Gym` });
+    expect(allowed.status).toBe(201);
+    expect(allowed.body.export.format).toBe("csv");
+    expect(allowed.body.export.row_count).toBeGreaterThanOrEqual(1);
+    createdExportIds.push(allowed.body.export.id);
+  });
+
+  it("generates xlsx and json exports too", async () => {
+    const xlsxRes = await operatorAgent.post("/exports").send({ format: "xlsx" });
+    expect(xlsxRes.status).toBe(201);
+    createdExportIds.push(xlsxRes.body.export.id);
+
+    const jsonRes = await operatorAgent.post("/exports").send({ format: "json" });
+    expect(jsonRes.status).toBe(201);
+    createdExportIds.push(jsonRes.body.export.id);
+  });
+
+  it("lists export history (any authenticated role) and re-downloads a file", async () => {
+    const createRes = await operatorAgent.post("/exports").send({ format: "csv" });
+    createdExportIds.push(createRes.body.export.id);
+    const exportId = createRes.body.export.id as string;
+
+    const listRes = await viewerAgent.get("/exports");
+    expect(listRes.status).toBe(200);
+    expect(listRes.body.exports.some((e: { id: string }) => e.id === exportId)).toBe(true);
+
+    const downloadRes = await viewerAgent.get(`/exports/${exportId}/download`);
+    expect(downloadRes.status).toBe(200);
+    expect(downloadRes.headers["content-disposition"]).toContain("attachment");
+  });
+
+  it("404s downloading an unknown export id", async () => {
+    const res = await viewerAgent.get(`/exports/${randomUUID()}/download`);
+    expect(res.status).toBe(404);
+  });
+
+  it("rejects an unauthenticated export request", async () => {
+    const res = await request(app).post("/exports").send({ format: "csv" });
+    expect(res.status).toBe(401);
+  });
 });

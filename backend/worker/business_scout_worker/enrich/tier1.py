@@ -15,6 +15,7 @@ from urllib.parse import urljoin, urlparse
 import httpx
 from selectolax.parser import HTMLParser
 
+from business_scout_worker.enrich import policy, tier2
 from business_scout_worker.enrich.models import Tier1Result
 
 MAX_RESPONSE_BYTES = 3_000_000  # guard against being fed a huge/malicious response body
@@ -161,9 +162,23 @@ def _find_contact_links(tree: HTMLParser, base_url: str) -> list[str]:
     return links
 
 
-async def _fetch(client: httpx.AsyncClient, url: str, timeout_s: float) -> str | None:
+async def _fetch(
+    client: httpx.AsyncClient,
+    url: str,
+    timeout_s: float,
+    *,
+    user_agent: str,
+    respect_robots_txt: bool,
+    request_delay_ms: int,
+    retry_count: int,
+) -> str | None:
+    if not await policy.is_allowed_by_robots(client, url, user_agent, enabled=respect_robots_txt):
+        return None
+    await policy.wait_for_rate_limit(url, request_delay_ms)
     try:
-        resp = await client.get(url, timeout=timeout_s, follow_redirects=True)
+        resp = await policy.get_with_retries(
+            client, url, timeout_s=timeout_s, retry_count=retry_count
+        )
     except httpx.HTTPError:
         return None
     if resp.status_code >= 400:
@@ -182,19 +197,44 @@ async def enrich_website(
     user_agent: str = "BusinessScoutAI/1.0",
     timeout_ms: int = 15000,
     client: httpx.AsyncClient | None = None,
+    use_tier2: bool = True,
+    respect_robots_txt: bool = True,
+    request_delay_ms: int = 0,
+    retry_count: int = 0,
+    proxy_url: str | None = None,
 ) -> Tier1Result:
     """Best-effort — never raises. A site that's down/unreachable/non-HTML yields an
-    empty-but-valid Tier1Result rather than blocking the pipeline."""
+    empty-but-valid Tier1Result rather than blocking the pipeline.
+
+    `use_tier2=False` is for tests — it disables the real-browser escalation so a mocked
+    fixture that happens to look JS-shelled never tries to launch Chromium. All of
+    `respect_robots_txt`/`request_delay_ms`/`retry_count`/`proxy_url` mirror the matching
+    `crawl_settings` columns 1:1 — see `enrich/policy.py`."""
     owns_client = client is None
     client = client or httpx.AsyncClient(
-        headers={"User-Agent": user_agent}, max_redirects=MAX_REDIRECTS
+        headers={"User-Agent": user_agent}, max_redirects=MAX_REDIRECTS, proxy=proxy_url
     )
     timeout_s = timeout_ms / 1000
 
     try:
-        home_html = await _fetch(client, website_url, timeout_s)
+        home_html = await _fetch(
+            client,
+            website_url,
+            timeout_s,
+            user_agent=user_agent,
+            respect_robots_txt=respect_robots_txt,
+            request_delay_ms=request_delay_ms,
+            retry_count=retry_count,
+        )
         if home_html is None:
             return Tier1Result()
+
+        used_tier2 = False
+        if use_tier2 and tier2.looks_js_shelled(home_html):
+            rendered = await tier2.render_html(website_url, timeout_ms=timeout_ms)
+            if rendered is not None:
+                home_html = rendered
+                used_tier2 = True
 
         home_tree = HTMLParser(home_html)
         home_text = _strip_noise_and_get_text(home_tree)
@@ -212,13 +252,23 @@ async def enrich_website(
 
         contact_links = _find_contact_links(home_tree, website_url)
         contact_url = contact_links[0] if contact_links else None
+        combined_text_parts = [home_text]
 
         for link in contact_links:
-            page_html = await _fetch(client, link, timeout_s)
+            page_html = await _fetch(
+                client,
+                link,
+                timeout_s,
+                user_agent=user_agent,
+                respect_robots_txt=respect_robots_txt,
+                request_delay_ms=request_delay_ms,
+                retry_count=retry_count,
+            )
             if page_html is None:
                 continue
             page_tree = HTMLParser(page_html)
             page_text = _strip_noise_and_get_text(page_tree)
+            combined_text_parts.append(page_text)
             emails |= _extract_emails(page_text, page_tree)
             phones |= _extract_phones(page_text, page_tree)
             for platform, url in _extract_socials(page_tree, link).items():
@@ -245,6 +295,8 @@ async def enrich_website(
             logo_url=logo_url,
             hero_image_url=hero_url,
             image_urls=images,
+            page_text=" ".join(combined_text_parts),
+            used_tier2=used_tier2,
         )
     finally:
         if owns_client:

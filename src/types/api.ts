@@ -124,3 +124,18 @@ export interface GeocodeResult {
   lng: number;
   displayName: string;
 }
+
+export type ExportFormat = "xlsx" | "csv" | "json";
+
+export interface ExportRecord {
+  id: string;
+  created_by: string | null;
+  format: ExportFormat;
+  filename: string;
+  row_count: number;
+  size_bytes: string;
+  filter_snapshot: Record<string, unknown>;
+  storage_path: string;
+  created_at: string;
+  expires_at: string | null;
+}

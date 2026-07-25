@@ -59,7 +59,7 @@ async def test_enrich_website_extracts_everything() -> None:
     client = httpx.AsyncClient(
         transport=httpx.MockTransport(_handler), base_url="https://fitzone.example"
     )
-    result = await enrich_website("https://fitzone.example/", client=client)
+    result = await enrich_website("https://fitzone.example/", client=client, use_tier2=False)
     await client.aclose()
 
     assert result.website_title == "FitZone Berlin"
@@ -98,7 +98,7 @@ async def test_enrich_website_handles_unreachable_site_gracefully() -> None:
         raise httpx.ConnectError("refused", request=request)
 
     client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
-    result = await enrich_website("https://dead-site.example/", client=client)
+    result = await enrich_website("https://dead-site.example/", client=client, use_tier2=False)
     await client.aclose()
 
     assert result.emails == []
@@ -114,7 +114,7 @@ async def test_enrich_website_ignores_non_html_response() -> None:
         )
 
     client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
-    result = await enrich_website("https://example.test/", client=client)
+    result = await enrich_website("https://example.test/", client=client, use_tier2=False)
     await client.aclose()
 
     assert result.website_title is None
@@ -129,7 +129,7 @@ async def test_enrich_website_ignores_oversized_response() -> None:
         return httpx.Response(200, text=huge_html, headers={"content-type": "text/html"})
 
     client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
-    result = await enrich_website("https://huge-site.example/", client=client)
+    result = await enrich_website("https://huge-site.example/", client=client, use_tier2=False)
     await client.aclose()
 
     assert result.website_title is None

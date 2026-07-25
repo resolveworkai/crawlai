@@ -17,6 +17,7 @@ from psycopg_pool import AsyncConnectionPool
 from business_scout_worker.db import connection
 from business_scout_worker.dedupe import (
     apply_enrichment,
+    merge_fuzzy_duplicate_if_found,
     needs_enrichment,
     upsert_discovered,
 )
@@ -92,6 +93,63 @@ async def test_upsert_discovered_inserts_a_new_row(
     await _cleanup(pool, [osm_id])
 
 
+async def test_upsert_discovered_parses_and_normalizes_phone_and_hours(
+    pool: AsyncConnectionPool, job_id: uuid.UUID
+) -> None:
+    osm_id = f"{RUN_ID}-hours"
+    discovered = DiscoveredBusiness(
+        osm_type="node",
+        osm_id=osm_id,
+        name="Test Library",
+        latitude=52.5,
+        longitude=13.4,
+        country="DE",
+        phone="030 1234567",  # national format — needs `country` as region to parse
+        raw_opening_hours="Mo-Fr 08:00-18:00; Sa 09:00-14:00",
+    )
+
+    business_id = await upsert_discovered(pool, job_id, discovered)
+
+    async with connection(pool) as conn:
+        cur = await conn.execute(
+            "SELECT phone, opening_hours FROM businesses WHERE id = %s", (str(business_id),)
+        )
+        row = cast("dict[str, Any] | None", await cur.fetchone())
+    assert row is not None
+    assert row["phone"] == "+49301234567"
+    assert row["opening_hours"]["monday"] == [{"open": "08:00", "close": "18:00"}]
+    assert row["opening_hours"]["saturday"] == [{"open": "09:00", "close": "14:00"}]
+    assert row["opening_hours"]["sunday"] == []
+
+    await _cleanup(pool, [osm_id])
+
+
+async def test_upsert_discovered_leaves_opening_hours_null_when_unparseable(
+    pool: AsyncConnectionPool, job_id: uuid.UUID
+) -> None:
+    osm_id = f"{RUN_ID}-badhours"
+    discovered = DiscoveredBusiness(
+        osm_type="node",
+        osm_id=osm_id,
+        name="Test Cafe",
+        latitude=52.5,
+        longitude=13.4,
+        raw_opening_hours="sunrise-sunset",
+    )
+
+    business_id = await upsert_discovered(pool, job_id, discovered)
+
+    async with connection(pool) as conn:
+        cur = await conn.execute(
+            "SELECT opening_hours FROM businesses WHERE id = %s", (str(business_id),)
+        )
+        row = cast("dict[str, Any] | None", await cur.fetchone())
+    assert row is not None
+    assert row["opening_hours"] is None
+
+    await _cleanup(pool, [osm_id])
+
+
 async def test_upsert_discovered_is_idempotent_on_same_osm_id(
     pool: AsyncConnectionPool, job_id: uuid.UUID
 ) -> None:
@@ -163,7 +221,7 @@ async def test_apply_enrichment_writes_contact_fields(
     result = Tier1Result(
         website_title="X Gym",
         emails=[f"contact-{RUN_ID}@x.example"],
-        phones=["+491234567"],
+        phones=["+49 30 1234567"],  # a real, phonenumbers-valid German fixed-line number
         facebook="https://facebook.com/x",
         image_urls=["https://x.example/a.jpg", "https://x.example/b.jpg"],
     )
@@ -171,7 +229,8 @@ async def test_apply_enrichment_writes_contact_fields(
 
     async with connection(pool) as conn:
         cur = await conn.execute(
-            "SELECT email, phone, enrichment_status, facebook FROM businesses WHERE id = %s",
+            """SELECT email, phone, enrichment_status, facebook, enrichment_tier
+               FROM businesses WHERE id = %s""",
             (str(business_id),),
         )
         row = cast("dict[str, Any] | None", await cur.fetchone())
@@ -183,11 +242,36 @@ async def test_apply_enrichment_writes_contact_fields(
 
     assert row is not None
     assert row["email"] == f"contact-{RUN_ID}@x.example"
-    assert row["phone"] == "+491234567"
+    assert row["phone"] == "+49301234567"  # normalized to E.164 by parse.phone.normalize_phone
     assert row["enrichment_status"] == "enriched"
     assert row["facebook"] == "https://facebook.com/x"
+    assert row["enrichment_tier"] == "tier1"  # result.used_tier2 defaulted False
     assert images_row is not None
     assert images_row["n"] == 2
+
+    await _cleanup(pool, [osm_id])
+
+
+async def test_apply_enrichment_tags_enrichment_tier_two_when_tier2_was_used(
+    pool: AsyncConnectionPool, job_id: uuid.UUID
+) -> None:
+    osm_id = f"{RUN_ID}-enrich-tier2"
+    business_id = await upsert_discovered(
+        pool,
+        job_id,
+        DiscoveredBusiness(osm_type="node", osm_id=osm_id, name="Y", latitude=1, longitude=1),
+    )
+    result = Tier1Result(website_title="Y Gym", used_tier2=True)
+    await apply_enrichment(pool, business_id, "https://y.example", result)
+
+    async with connection(pool) as conn:
+        cur = await conn.execute(
+            "SELECT enrichment_tier FROM businesses WHERE id = %s", (str(business_id),)
+        )
+        row = cast("dict[str, Any] | None", await cur.fetchone())
+
+    assert row is not None
+    assert row["enrichment_tier"] == "tier2"
 
     await _cleanup(pool, [osm_id])
 
@@ -238,5 +322,144 @@ async def test_apply_enrichment_tolerates_email_collision_with_another_business(
     assert row_b["email"] is None  # B never got to steal the email
     assert row_b["website_title"] == "B"  # but every other field still landed on B's own row
     assert row_b["enrichment_status"] == "enriched"
+
+    await _cleanup(pool, [osm_id_a, osm_id_b])
+
+
+async def test_merge_fuzzy_duplicate_merges_close_similar_named_nearby_businesses(
+    pool: AsyncConnectionPool, job_id: uuid.UUID
+) -> None:
+    """The node-vs-way case: two separate OSM elements for the same real-world library, no
+    shared email, but same name + practically the same coordinates — must merge."""
+    osm_id_a = f"{RUN_ID}-fuzzA"
+    osm_id_b = f"{RUN_ID}-fuzzB"
+
+    id_a = await upsert_discovered(
+        pool,
+        job_id,
+        DiscoveredBusiness(
+            osm_type="node",
+            osm_id=osm_id_a,
+            name="Kurt-Tucholsky-Bibliothek",
+            latitude=52.5200,
+            longitude=13.4050,
+        ),
+    )
+    await apply_enrichment(
+        pool, id_a, "https://a.example", Tier1Result(emails=["a@a.example"], website_title="A site")
+    )
+
+    id_b = await upsert_discovered(
+        pool,
+        job_id,
+        DiscoveredBusiness(
+            osm_type="way",
+            osm_id=osm_id_b,
+            name="Kurt-Tucholsky-Bibliothek",  # identical name, same real building
+            latitude=52.5201,  # ~11m away — well within FUZZY_MATCH_RADIUS_METERS
+            longitude=13.4051,
+        ),
+    )
+    survivor_id = await merge_fuzzy_duplicate_if_found(
+        pool, id_b, "Kurt-Tucholsky-Bibliothek", 52.5201, 13.4051
+    )
+
+    assert survivor_id == id_a  # id_a is older -> canonical
+
+    async with connection(pool) as conn:
+        cur = await conn.execute(
+            """SELECT email, website_title, enrichment_status, merged_into_id
+               FROM businesses WHERE id = %s""",
+            (str(id_a),),
+        )
+        row_a = cast("dict[str, Any] | None", await cur.fetchone())
+        cur2 = await conn.execute(
+            "SELECT merged_into_id FROM businesses WHERE id = %s", (str(id_b),)
+        )
+        row_b = cast("dict[str, Any] | None", await cur2.fetchone())
+
+    assert row_a is not None
+    assert row_a["merged_into_id"] is None  # canonical stays a live, standalone row
+    assert row_a["email"] == "a@a.example"
+    assert row_a["website_title"] == "A site"
+    assert row_a["enrichment_status"] == "enriched"
+
+    assert row_b is not None
+    assert row_b["merged_into_id"] == id_a  # duplicate now points at the canonical
+
+    await _cleanup(pool, [osm_id_a, osm_id_b])
+
+
+async def test_merge_fuzzy_duplicate_leaves_distinct_businesses_alone(
+    pool: AsyncConnectionPool, job_id: uuid.UUID
+) -> None:
+    """Two genuinely different businesses that happen to be near each other with dissimilar
+    names must NOT be merged."""
+    osm_id_a = f"{RUN_ID}-distinctA"
+    osm_id_b = f"{RUN_ID}-distinctB"
+
+    id_a = await upsert_discovered(
+        pool,
+        job_id,
+        DiscoveredBusiness(
+            osm_type="node", osm_id=osm_id_a, name="Central Gym", latitude=52.52, longitude=13.405
+        ),
+    )
+    await upsert_discovered(
+        pool,
+        job_id,
+        DiscoveredBusiness(
+            osm_type="node",
+            osm_id=osm_id_b,
+            name="Riverside Library",
+            latitude=52.5201,
+            longitude=13.4051,
+        ),
+    )
+
+    survivor_id = await merge_fuzzy_duplicate_if_found(pool, id_a, "Central Gym", 52.52, 13.405)
+
+    assert survivor_id == id_a  # no match found -> unchanged
+
+    async with connection(pool) as conn:
+        cur = await conn.execute(
+            "SELECT merged_into_id FROM businesses WHERE osm_id = ANY(%s)",
+            ([osm_id_a, osm_id_b],),
+        )
+        rows = cast("list[dict[str, Any]]", await cur.fetchall())
+    assert all(row["merged_into_id"] is None for row in rows)
+
+    await _cleanup(pool, [osm_id_a, osm_id_b])
+
+
+async def test_merge_fuzzy_duplicate_ignores_businesses_outside_radius(
+    pool: AsyncConnectionPool, job_id: uuid.UUID
+) -> None:
+    """Same name, but far enough apart that they're clearly different branches, not a
+    node-vs-way duplicate of the same location."""
+    osm_id_a = f"{RUN_ID}-farA"
+    osm_id_b = f"{RUN_ID}-farB"
+
+    id_a = await upsert_discovered(
+        pool,
+        job_id,
+        DiscoveredBusiness(
+            osm_type="node", osm_id=osm_id_a, name="City Library", latitude=52.52, longitude=13.405
+        ),
+    )
+    await upsert_discovered(
+        pool,
+        job_id,
+        DiscoveredBusiness(
+            osm_type="node",
+            osm_id=osm_id_b,
+            name="City Library",
+            latitude=52.60,  # ~9km away — a different branch, not a geo duplicate
+            longitude=13.405,
+        ),
+    )
+
+    survivor_id = await merge_fuzzy_duplicate_if_found(pool, id_a, "City Library", 52.52, 13.405)
+    assert survivor_id == id_a
 
     await _cleanup(pool, [osm_id_a, osm_id_b])

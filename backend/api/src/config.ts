@@ -28,6 +28,24 @@ const envSchema = z.object({
   // entirely with no visible error. Explicit override wins; otherwise falls back to NODE_ENV
   // so a genuine HTTPS-fronted deployment still defaults secure-on. See docker-compose.yml.
   COOKIE_SECURE: z.enum(["true", "false"]).optional(),
+  // Phase 6 — manual, on-demand Google Places enrichment (never automatic — see
+  // services/googleEnrichmentService.ts). Absent = the "Fetch rating" button is
+  // hidden/disabled on the frontend and the endpoint itself refuses with 503, rather than the
+  // app failing to boot — this integration is opt-in, not required.
+  GOOGLE_API_KEY: z.string().min(1).optional(),
+  // Phase 7 — where generated export files (xlsx/csv/json) live. docker-compose.yml mounts a
+  // named volume (`business_scout_exports`) at this path so files survive a container restart;
+  // defaults to a repo-relative path for local (non-Docker) dev.
+  EXPORTS_DIR: z.string().min(1).default("./data/exports"),
+  EXPORT_RETENTION_DAYS: z.coerce.number().int().positive().default(7),
+  // Phase 7 — public /api/v1/* for external consumers (e.g. a future myhub integration).
+  // Comma-separated static keys, never a per-user JWT — see middleware/apiKeyAuth.ts. Absent =
+  // every /api/v1 request is rejected with 401, rather than the app failing to boot.
+  API_KEYS: z.string().optional(),
+  // Phase 8 performance pass — `pg`'s undocumented-but-real default is max:10 if unset. Made
+  // explicit + tunable rather than relying on the library default silently capping concurrency
+  // under load (e.g. many simultaneous SSE-streaming dashboard clients + API traffic).
+  DB_POOL_MAX: z.coerce.number().int().positive().default(10),
 });
 
 function loadConfig() {
@@ -42,7 +60,9 @@ function loadConfig() {
     process.exit(1);
   }
   const cookieSecure =
-    data.COOKIE_SECURE !== undefined ? data.COOKIE_SECURE === "true" : data.NODE_ENV === "production";
+    data.COOKIE_SECURE !== undefined
+      ? data.COOKIE_SECURE === "true"
+      : data.NODE_ENV === "production";
   return { ...data, COOKIE_SECURE: cookieSecure };
 }
 

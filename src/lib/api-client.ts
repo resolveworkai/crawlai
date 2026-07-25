@@ -95,3 +95,10 @@ export const api = {
 export function sseUrl(path: string): string {
   return `${API_BASE_URL}${path}`;
 }
+
+// File-download URL (Phase 7 exports) — a plain <a href> navigation, not a fetch+blob dance.
+// Regular browser navigation (even a new-tab open) sends the httpOnly auth cookie the same as
+// any top-level GET, so no explicit credentials handling is needed here.
+export function fileUrl(path: string): string {
+  return `${API_BASE_URL}${path}`;
+}

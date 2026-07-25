@@ -165,7 +165,14 @@ class Business(_Row):
     facebook_pixel: bool | None
 
     enrichment_status: EnrichmentStatus
+    # Phase 8 observability — which tier actually supplied the contact data. See
+    # dedupe.py's apply_enrichment and db/migrations/*system-metrics-and-tier.sql.
+    enrichment_tier: Literal["tier1", "tier2"] | None
     extras: dict[str, Any]
+
+    # Fuzzy secondary dedup (Phase 4) — non-null means this row was soft-merged into another,
+    # better-known duplicate; see dedupe.py and db/migrations/*fuzzy-dedup-merge.sql.
+    merged_into_id: UUID | None
 
     created_at: datetime
     updated_at: datetime

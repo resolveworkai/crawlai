@@ -75,3 +75,44 @@ migration with a tested up **and** down.
 Vitest + `supertest`/`undici` against the running Express app (real HTTP, no browser). Every endpoint gets an
 integration test including its authz paths (401/403). Mock external calls (Nominatim, Google Places) in tests —
 never hit them live except in the explicitly CI-gated "live smoke" tests.
+
+## Phase 7 — exports (streamed generation, never load-everything-into-memory)
+
+`services/exportService.ts` batches DB reads (`EXPORT_BATCH_SIZE`, currently 500) and writes each format
+incrementally to a file stream rather than materializing the whole result set: CSV/JSON write directly to a
+`fs.createWriteStream`; XLSX uses `exceljs`'s **streaming** `WorkbookWriter` (not the in-memory `Workbook`) —
+using the non-streaming API here would defeat the point for a large export. The pagination loop advances by
+`businesses.length` (rows actually returned), not by the fixed batch size — a page shorter than the batch size
+is the real "no more rows" signal for LIMIT/OFFSET pagination, and relying on `total` instead breaks if a page
+ever returns fewer rows than requested while more remain. **Never use the `xlsx`/SheetJS npm package** — it has
+unfixed high-severity CVEs (prototype pollution + ReDoS) and was removed from the frontend for exactly this
+reason; `exceljs` is the only xlsx library this project uses.
+
+## Phase 7 — public `/api/v1` (separate auth from the frontend's session)
+
+`middleware/apiKeyAuth.ts`'s `requireApiKey` is entirely independent of `requireAuth`/JWT — static keys from the
+`API_KEYS` env var (comma-separated), checked via `Authorization: Bearer <key>` or `X-API-Key`. Deny-by-default:
+zero configured keys means every `/api/v1` request 401s, never silently open. `routes/publicApi.ts` reuses the
+same `listBusinessesFiltered`/`listBusinessesQuerySchema` the session-authed `/businesses` route uses — one
+query implementation, two auth gates — but returns the export module's **nested** JSON shape
+(`lib/businessExport.ts`'s `toNestedJson`), not the flat spreadsheet columns, since a machine consumer wants
+structured data. `GET /api/v1/openapi.json` is deliberately unauthenticated (a prospective consumer needs to see
+the contract before they have a key).
+
+## Phase 8 — rate limiting, metrics, pool sizing
+
+- **Rate limiting** (`middleware/rateLimit.ts`, `express-rate-limit`) is applied only to the two genuinely
+  brute-forceable/abusable surfaces: `POST /auth/login` (10/15min, keyed by IP) and `/api/v1/*` (120/min, keyed
+  by the API key itself when present — several legitimate consumers can share an egress IP via NAT/proxy, so
+  keying by key rather than IP avoids one tenant's traffic throttling another's). Everything else sits behind
+  `requireAuth` already, so the blast radius without rate limiting is much smaller there — don't add rate
+  limiting everywhere reflexively, it has a real cost (extra middleware on every request) for surfaces that
+  don't need it.
+- **`system_metrics`** (`db/systemMetrics.ts`) is a tiny generic upsert-counter table shared with the Python
+  worker (`business_scout_worker/metrics.py`, same SQL pattern) — see `skills_db.md` for the full cross-runtime
+  note. Every increment call site wraps itself in error handling so a metrics-write failure never fails the
+  surrounding business logic (e.g. `googleEnrichmentService.ts` still returns the successful rating/review write
+  even if the metric increment that follows it throws).
+- **`config.DB_POOL_MAX`** (default 10, tunable via env) is now explicit on the `pg.Pool` construction in
+  `db/pool.ts` — `pg`'s undocumented default is also 10, but leaving it implicit means nobody can tune it
+  without reading `pg`'s source. Bump this before assuming a connection-pool bottleneck under load.

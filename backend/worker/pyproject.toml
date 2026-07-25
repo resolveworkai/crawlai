@@ -12,18 +12,33 @@ dependencies = [
   "httpx>=0.27,<1",
   "tenacity>=9.0,<10",
   "selectolax>=0.3,<1",
+  # Exact-pinned, not a range: `backend/Dockerfile`'s base image ships browser binaries for
+  # one specific Playwright version only. A range here can silently resolve to a newer patch
+  # on a fresh Docker build than the pinned base-image tag ships browsers for — verified real
+  # failure (see Dockerfile's comment). Bump this AND the Dockerfile's tag together, never
+  # either alone.
+  "playwright==1.61.0",
+  "phonenumbers>=8.13,<9",
+  "rapidfuzz>=3.10,<4",
 ]
 
 [project.optional-dependencies]
 dev = [
   "ruff>=0.8,<1",
   "mypy>=1.13,<2",
-  "pytest>=8.3,<9",
-  "pytest-asyncio>=0.24,<1",
+  # >=9.0.3 fixes PYSEC-2026-1845 (see Phase 8 security pass, pip-audit) — dev-only (never
+  # shipped in the Docker image, which installs `./worker`, not `.[dev]`), bumped anyway.
+  # pytest-asyncio's 0.x line caps pytest at <9, so it moves to the 1.x line together.
+  "pytest>=9.0.3,<10",
+  "pytest-asyncio>=1.0,<2",
 ]
-# Tier-2 (added in Phase 4): playwright
+# pypostal (libpostal bindings) is deliberately NOT a hard dependency: it needs the libpostal C
+# library + a C toolchain (MSVC on Windows) that local dev machines don't necessarily have —
+# verified: `pip install postal` fails outright on a plain Windows dev setup with no MSVC. The
+# Docker image (Phase 4, backend/Dockerfile) apt-installs libpostal and pip-installs postal
+# there; parse/address.py imports it lazily behind a try/except so the rest of the worker (and
+# every test that doesn't need it) still runs on a machine without it. See skills_backend_python.md.
 # Tier-3 (added in Phase 5, optional): openai (any OpenAI-compatible client)
-# Address/phone parsing (added in Phase 4): phonenumbers, postal (libpostal), rapidfuzz
 
 [build-system]
 requires = ["hatchling"]

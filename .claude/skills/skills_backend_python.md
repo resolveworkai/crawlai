@@ -35,6 +35,20 @@ replacement API documented yet as of this writing — harmless noise for now; re
 ships a supported alternative. If you ever see a mysterious multi-minute hang + pool-timeout on async DB code
 on Windows, check for this exact symptom before assuming it's a real connectivity problem.
 
+### ⚠️ Windows local dev — this SelectorEventLoop fix directly conflicts with Playwright (Phase 4)
+**Verified, not hypothetical**: `test_tier2.py`'s real-Chromium-launch test failed with
+`NotImplementedError` at `asyncio.create_subprocess_exec` — Playwright launches Chromium as a subprocess, and
+Windows' `SelectorEventLoop` (the one psycopg3 needs, set process-wide above) **does not support subprocess
+management at all**; only `ProactorEventLoop` does. There is no event loop policy that satisfies both psycopg3
+and Playwright simultaneously in the same Windows process. Since `conftest.py` sets `SelectorEventLoop`
+globally for the whole test session (required by every DB-touching test), the one test that needs a real
+browser launch (`test_render_html_real_browser_launches_and_renders`) is `@pytest.mark.skipif(sys.platform ==
+"win32", ...)` — it still runs in CI (Linux, no conflict) and in the actual Docker deployment. Every other
+Tier-2 test (`looks_js_shelled`, the escalation wiring in `enrich_website`) mocks `tier2.render_html` and needs
+neither event loop policy, so it runs everywhere. If you ever add another test that needs a *real* browser
+launch, it needs the same skip — don't try to "fix" this by changing the global event loop policy, it can't be
+fixed that way on Windows.
+
 ## Structure (Phase 3 — current)
 
 ```
@@ -97,14 +111,66 @@ backend/worker/business_scout_worker/
 2. **Tier 1 — httpx + selectolax**, deterministic: `mailto:`/`tel:` + regex, denylist junk
    (`sentry.io`, `@2x.png`, `noreply@`), contact pages discovered from **nav links** (not a blind `/contact`
    guess), `impressum` included for EU sites.
-3. **Tier 2 — Playwright**, only when Tier 1's result looks JS-shelled (near-empty body / known SPA markers).
-   Resource-blocking (abort image/font/css/media) on every Tier-2 page load. Tiny, reused browser pool.
+3. **Tier 2 — Playwright** (`enrich/tier2.py`, built Phase 4), only when Tier 1's result looks JS-shelled
+   (`tier2.looks_js_shelled` — near-empty body text, or a near-empty designated SPA root div like `#root`/`#app`).
+   Resource-blocking (abort image/font/media/stylesheet) on every Tier-2 page load. **One reused `Browser`
+   instance for the whole daemon process** (`tier2._get_browser`, lazy-launched, closed once in `main.py`'s
+   shutdown via `tier2.close_browser()`) — never one browser per page/request. Tier-2's only job is producing a
+   *better HTML source* for `tier1.py`'s same extraction functions to parse — it is not a separate parsing path.
 4. **Tier 3 — LLM**, only for the enabled `dynamic_fields.prompt`s and genuinely ambiguous cases. Provider-agnostic
    via `LLM_BASE_URL` (OpenAI-compatible: Ollama/Gemini/OpenAI/Anthropic-compat) — **default Ollama, optional and
    can be off entirely** (`use_ai_extraction=false`); never assume a paid key is present. Structured JSON output,
    `pydantic`-validated, one retry, cached per `(domain, field-set)`.
 
 A business with only OSM + Tier-1 data is a **valid, complete row** — not a failure. Enrichment is best-effort.
+
+## Crawl politeness (`enrich/policy.py`, Phase 4) — every fetch goes through this
+
+`tier1._fetch` (both the homepage fetch and every contact-page fetch) always calls, in order: (1)
+`policy.is_allowed_by_robots` — fail-OPEN (treats the page as allowed) if `robots.txt` is missing/unreachable,
+since a broken robots.txt isn't a disallow signal; skip entirely with `crawl_settings.respect_robots_txt=false`.
+(2) `policy.wait_for_rate_limit` — enforces `crawl_settings.request_delay_ms` as a **per-domain** minimum gap
+(never a global delay; unrelated domains never wait on each other), guarded by a per-domain `asyncio.Lock` so
+two near-simultaneous fetches to the same domain (homepage + a contact page) can't both read a stale
+"last request time". (3) `policy.get_with_retries` — `crawl_settings.retry_count` **extra** attempts after the
+first (so `retry_count=0` = exactly one try; matches the same "N retries after the first" meaning used
+elsewhere, e.g. `discovery/overpass.py`'s hardcoded `stop_after_attempt(3)`), no backoff sleep beyond the rate
+limiter's own spacing. All three are driven by `crawl_settings` end to end: `pipeline._process_one` →
+`enrich_website(respect_robots_txt=, request_delay_ms=, retry_count=, proxy_url=)` → `_fetch`. `proxy_url` is
+passed straight to the `httpx.AsyncClient(proxy=...)` constructor when `enrich_website` builds its own default
+client (a caller-supplied `client=` in tests bypasses proxy entirely, which is fine — proxying is a
+`crawl_settings` feature for the real daemon, not something tests need). The `_robots_cache`/`_last_request_at`
+dicts in `policy.py` are process-lifetime module state (same pattern as `tier2`'s browser singleton) — call
+`policy._robots_cache.clear()` / `_last_request_at.clear()` / `_domain_locks.clear()` between tests that reuse a
+domain name, or state leaks across test cases (see `test_policy.py`).
+
+## Phone/opening-hours parsing (`parse/`, Phase 4) — and why pypostal isn't wired in
+
+- `parse/phone.py` (`normalize_phones`/`normalize_phone`) wraps `phonenumbers.parse(num, region)` +
+  `is_valid_number` + E.164 formatting. `region` is always the business's OSM `country` tag (`addr:country`,
+  2-letter code) — passing `None` still works for already-international `+`-prefixed numbers but silently fails
+  to parse local-format numbers (e.g. `"030 1234567"` needs `region="DE"`).
+  **Only the primary `businesses.phone` column is normalized** (`dedupe.upsert_discovered`'s OSM
+  `phone` tag, and `dedupe.apply_enrichment`'s first Tier-1 candidate) — the `phones` **array** stays as
+  Tier-1's raw, deduped, unnormalized candidates on purpose: req #4 wants *every* phone found on the page, and
+  `phonenumbers` would silently drop real-but-ambiguous-without-locale numbers, which defeats that. Same
+  reasoning applies to `emails`/`email`.
+- `parse/hours.py` (`parse_opening_hours`) parses OSM's `opening_hours` tag into the weekday-keyed JSONB shape
+  `businesses.opening_hours` expects. **Deliberately a best-effort parser for the common subset only**
+  (day ranges/lists + `HH:MM-HH:MM` ranges, `;`-separated rules, `off`/`closed`) — OSM's full spec includes
+  public holidays, seasons, "sunrise"/"sunset", and free-text comments that this does not attempt. **Whole
+  string parses cleanly, or the result is `None`** — never a partial/guessed result. Wired into
+  `dedupe.upsert_discovered` (writes via `psycopg.types.json.Jsonb`, not a bare dict — psycopg3 doesn't
+  auto-adapt plain dicts to jsonb).
+- **`pypostal` (libpostal bindings) — deliberately NOT wired in, and not a hard dependency.** Two reasons: (1)
+  **verified real blocker**: `pip install postal` fails outright on a plain Windows dev machine (needs MSVC +
+  the libpostal C library, neither present) — making it a hard dependency would break local dev/testing on
+  Windows entirely. (2) **no actual caller exists**: pypostal's job per the plan is splitting an *unstructured*
+  "name on map" address string into components, but our primary discovery path (OSM/Overpass) already provides
+  **structured** `addr:housenumber`/`addr:street`/`addr:city`/etc. tags directly — there's no free-text address
+  blob in the current pipeline that needs splitting. It becomes relevant once Phase 6 lands (parsing Google's
+  `formatted_address` string, which genuinely is unstructured free text) — add it then, behind a lazy
+  `try/except ImportError` (Docker-only, apt-installed there) so local Windows dev keeps working regardless.
 
 ## Two verified real-crawl bugs (both fixed — read before touching overpass.py or tier1.py)
 
@@ -158,6 +224,20 @@ pipeline, stop — that violates the explicit "manual only" requirement.
 - Region-aware phone parsing: `phonenumbers.parse(num, region)` where `region` comes from the **OSM country tag**
   — omitting it silently drops valid national-format numbers.
 - Idempotent re-crawl: skip businesses with a recent `updated_at` unless a "force refresh" flag is set.
+
+## Phase 8 — pool sizing, metrics
+
+- **`settings.db_pool_min`/`db_pool_max`** (defaults 4/40) are now explicit on `create_pool`'s
+  `AsyncConnectionPool(...)` — psycopg_pool's real default is `min_size=4, max_size=None` (`None` means "capped
+  at min_size", i.e. only 4 connections total unless set). A batch of `crawl_settings.concurrency` (up to 32)
+  businesses processed concurrently, each doing several sequential DB writes, would badly serialize behind only
+  4 pooled connections — this was a real, easy-to-miss bottleneck, not a hypothetical one. Bump `db_pool_max`
+  further only if `concurrency` is ever raised meaningfully above 32.
+- **`metrics.py`**'s `increment_metric(pool, key, by=1)` upserts into the same `system_metrics` table Node writes
+  to (`backend/api/src/db/systemMetrics.ts` — see `skills_db.md`). Every call site in `pipeline.py` wraps itself
+  in its own try/except — a metrics-table write failure must never retroactively mark an otherwise-successful
+  business as `'failed'`. Follow that pattern for any new metric you add; don't let observability code affect
+  the outcome it's observing.
 
 ## Testing (no browser automation against our own app)
 

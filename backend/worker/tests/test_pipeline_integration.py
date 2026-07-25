@@ -22,6 +22,7 @@ from business_scout_worker.db import connection
 from business_scout_worker.discovery.models import DiscoveredBusiness
 from business_scout_worker.enrich.models import Tier1Result
 from business_scout_worker.jobs import claim_pending_job
+from business_scout_worker.settings import Settings
 
 pytestmark = pytest.mark.integration
 
@@ -94,7 +95,9 @@ async def test_seam_job_insert_claim_process_and_final_state(
     assert claimed.status == "discovering"
 
     # 3. Real pipeline run (discovery/enrichment mocked; everything else real).
-    await pipeline.run_job(pool, claimed)
+    await pipeline.run_job(
+        pool, claimed, Settings.model_validate({"database_url": "postgresql://x/y"})
+    )
 
     # 4. Assert final state landed correctly.
     async with connection(pool) as conn:

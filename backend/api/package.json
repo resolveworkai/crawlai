@@ -1,5 +1,6 @@
 {
   "name": "business-scout-ai-backend-api",
+  "version": "0.1.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -23,9 +24,12 @@
     "cookie-parser": "^1.4.7",
     "cors": "^2.8.5",
     "dotenv": "^16.4.7",
+    "exceljs": "^4.4.0",
     "express": "^5.1.0",
+    "express-rate-limit": "^8.5.2",
     "helmet": "^8.0.0",
     "jsonwebtoken": "^9.0.3",
+    "node-pg-migrate": "^8.0.4",
     "pg": "^8.13.1",
     "pino": "^9.6.0",
     "pino-http": "^10.3.0",
@@ -44,7 +48,6 @@
     "eslint": "^9.32.0",
     "eslint-config-prettier": "^10.1.1",
     "globals": "^15.15.0",
-    "node-pg-migrate": "^8.0.4",
     "prettier": "^3.7.3",
     "supertest": "^7.0.0",
     "tsx": "^4.19.2",

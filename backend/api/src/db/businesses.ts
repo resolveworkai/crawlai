@@ -31,6 +31,9 @@ export async function listBusinessesFiltered(filters: BusinessFilters): Promise<
     clauses.push(sql.replace("?", `$${values.length}`));
   }
 
+  // Fuzzy-dedup merges (Phase 4, worker's dedupe.py) are soft — the row still exists but is
+  // folded into a canonical duplicate, so it must never appear as a separate listing.
+  clauses.push("merged_into_id IS NULL");
   if (filters.category) addClause("category = ?", filters.category);
   if (filters.city) addClause("city = ?", filters.city);
   if (filters.enrichmentStatus) addClause("enrichment_status = ?", filters.enrichmentStatus);
@@ -58,7 +61,7 @@ export async function listBusinessesFiltered(filters: BusinessFilters): Promise<
 
 export async function listBusinesses(limit = 50): Promise<Business[]> {
   const { rows } = await pool.query<Business>(
-    "SELECT * FROM businesses ORDER BY created_at DESC LIMIT $1",
+    "SELECT * FROM businesses WHERE merged_into_id IS NULL ORDER BY created_at DESC LIMIT $1",
     [limit],
   );
   return rows;
@@ -67,14 +70,18 @@ export async function listBusinesses(limit = 50): Promise<Business[]> {
 // Overview screen's "Recently enriched" widget (top 5).
 export async function listRecentlyEnriched(limit = 5): Promise<Business[]> {
   const { rows } = await pool.query<Business>(
-    "SELECT * FROM businesses WHERE enrichment_status = 'enriched' ORDER BY updated_at DESC LIMIT $1",
+    `SELECT * FROM businesses
+     WHERE enrichment_status = 'enriched' AND merged_into_id IS NULL
+     ORDER BY updated_at DESC LIMIT $1`,
     [limit],
   );
   return rows;
 }
 
 export async function countBusinesses(): Promise<number> {
-  const { rows } = await pool.query<{ count: string }>("SELECT count(*)::text FROM businesses");
+  const { rows } = await pool.query<{ count: string }>(
+    "SELECT count(*)::text FROM businesses WHERE merged_into_id IS NULL",
+  );
   return Number(rows[0]?.count ?? 0);
 }
 

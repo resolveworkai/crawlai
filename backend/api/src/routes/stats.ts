@@ -1,9 +1,10 @@
 /** Authored by: Mohit Singh */
 import { Router } from "express";
 import { requireAuth } from "../middleware/auth.js";
-import { getOverviewStats, getSevenDayTrend } from "../db/stats.js";
+import { getOverviewStats, getSevenDayTrend, getSystemHealth } from "../db/stats.js";
 import { listCrawlJobs } from "../db/crawlJobs.js";
 import { listRecentlyEnriched } from "../db/businesses.js";
+import { getAllMetrics } from "../db/systemMetrics.js";
 
 export const statsRouter = Router();
 
@@ -39,4 +40,19 @@ statsRouter.get("/stats/overview", requireAuth, async (_req, res) => {
   const data: OverviewResponse = { stats, trend, recentJobs, recentlyEnriched };
   cache = { at: Date.now(), data };
   res.json(data);
+});
+
+// Phase 8 — observability: job success rate + failure-spike alarm, Tier-1-vs-Tier-2 hit ratio,
+// and raw LLM/Google Places call counts (see db/systemMetrics.ts). A lightweight status surface
+// for operators, not a full metrics/alerting pipeline — see md/plans/0001-*.md "Phase 8".
+statsRouter.get("/stats/system", requireAuth, async (_req, res) => {
+  const [health, metrics] = await Promise.all([getSystemHealth(), getAllMetrics()]);
+  res.json({
+    health,
+    metrics: {
+      llmCallsTotal: metrics.llm_calls_total ?? 0,
+      tier2RendersTotal: metrics.tier2_renders_total ?? 0,
+      googlePlacesCallsTotal: metrics.google_places_calls_total ?? 0,
+    },
+  });
 });

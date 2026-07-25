@@ -8,13 +8,7 @@
 export type AppRole = "admin" | "operator" | "viewer";
 
 export type JobStatus =
-  | "pending"
-  | "discovering"
-  | "crawling"
-  | "paused"
-  | "completed"
-  | "failed"
-  | "cancelled";
+  "pending" | "discovering" | "crawling" | "paused" | "completed" | "failed" | "cancelled";
 
 export type LogLevel = "info" | "warn" | "error" | "debug";
 
@@ -141,7 +135,15 @@ export interface Business {
   google_analytics: boolean | null;
   facebook_pixel: boolean | null;
   enrichment_status: EnrichmentStatus;
+  // Phase 8 observability — which tier actually supplied the contact data (null until
+  // enriched at least once, or when the site had no working Tier-1 fetch at all). Powers the
+  // "tier-hit ratio" system metric. See db/migrations/*system-metrics-and-tier.sql.
+  enrichment_tier: "tier1" | "tier2" | null;
   extras: Record<string, unknown>;
+  // Fuzzy secondary dedup (Phase 4, worker's dedupe.py) — non-null means this row was merged
+  // into another (better-known) business row and should be excluded from public listings.
+  // Never deleted, so this is fully reversible by nulling the column.
+  merged_into_id: string | null;
   created_at: Date;
   updated_at: Date;
 }

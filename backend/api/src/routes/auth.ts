@@ -1,7 +1,13 @@
 /** Authored by: Mohit Singh */
 import { Router } from "express";
-import { ACCESS_COOKIE, clearAuthCookies, REFRESH_COOKIE, setAuthCookies } from "../auth/cookies.js";
+import {
+  ACCESS_COOKIE,
+  clearAuthCookies,
+  REFRESH_COOKIE,
+  setAuthCookies,
+} from "../auth/cookies.js";
 import { requireAuth } from "../middleware/auth.js";
+import { loginRateLimit } from "../middleware/rateLimit.js";
 import { validate } from "../middleware/validate.js";
 import { loginSchema } from "../schemas/auth.js";
 import { getAuthenticatedUser, login, refreshAccessToken } from "../services/authService.js";
@@ -9,7 +15,7 @@ import { UnauthorizedError } from "../errors.js";
 
 export const authRouter = Router();
 
-authRouter.post("/auth/login", validate(loginSchema), async (req, res) => {
+authRouter.post("/auth/login", loginRateLimit, validate(loginSchema), async (req, res) => {
   const { email, password } = req.body as { email: string; password: string };
   const { user, accessToken, refreshToken } = await login(email, password);
   setAuthCookies(res, accessToken, refreshToken);

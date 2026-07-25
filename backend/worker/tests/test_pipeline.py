@@ -17,11 +17,12 @@ from uuid import uuid4
 import pytest
 from psycopg_pool import AsyncConnectionPool
 
-from business_scout_worker import dedupe, pipeline
+from business_scout_worker import dedupe, llm, metrics, pipeline
 from business_scout_worker import jobs as job_queries
 from business_scout_worker.discovery.models import DiscoveredBusiness
 from business_scout_worker.enrich.models import Tier1Result
-from business_scout_worker.models import CrawlJob, CrawlSettings
+from business_scout_worker.models import CrawlJob, CrawlSettings, DynamicField
+from business_scout_worker.settings import Settings
 
 FakePool = cast("type[AsyncConnectionPool]", object)
 """A dummy stand-in for AsyncConnectionPool — every call that would use it is monkeypatched, so
@@ -85,16 +86,45 @@ def _discovered(name: str, *, website_url: str | None = "https://x.example") -> 
     )
 
 
+def _worker_settings(**overrides: object) -> Settings:
+    defaults: dict[str, object] = dict(database_url="postgresql://x/y")
+    defaults.update(overrides)
+    return Settings.model_validate(defaults)
+
+
+def _dynamic_field(**overrides: object) -> DynamicField:
+    defaults: dict[str, object] = dict(
+        id=uuid4(),
+        created_by=uuid4(),
+        key="founded_year",
+        label="Founded year",
+        prompt="What year was this business founded?",
+        field_type="text",
+        enabled=True,
+        created_at=datetime.now(UTC),
+        updated_at=datetime.now(UTC),
+    )
+    defaults.update(overrides)
+    return DynamicField.model_validate(defaults)
+
+
 @pytest.fixture
 def patched(monkeypatch: pytest.MonkeyPatch) -> dict[str, AsyncMock]:
     """Patches every external call pipeline.py makes; returns the mocks for assertions."""
     mocks: dict[str, AsyncMock] = {
         "get_crawl_settings": AsyncMock(return_value=_settings()),
+        "list_enabled_dynamic_fields": AsyncMock(return_value=[]),
         "discover": AsyncMock(return_value=[]),
         "enrich_website": AsyncMock(return_value=Tier1Result()),
         "upsert_discovered": AsyncMock(return_value=uuid4()),
+        "merge_fuzzy_duplicate_if_found": AsyncMock(
+            side_effect=lambda _pool, business_id, *_a, **_kw: business_id
+        ),
         "needs_enrichment": AsyncMock(return_value=True),
         "apply_enrichment": AsyncMock(),
+        "apply_ai_extras": AsyncMock(),
+        "extract_field": AsyncMock(return_value=None),
+        "increment_metric": AsyncMock(),
         "mark_enrichment_status": AsyncMock(),
         "mark_enrichment_failed": AsyncMock(),
         "write_log": AsyncMock(),
@@ -106,11 +136,20 @@ def patched(monkeypatch: pytest.MonkeyPatch) -> dict[str, AsyncMock]:
         "refresh_job": AsyncMock(return_value=_job()),
     }
     monkeypatch.setattr(pipeline, "get_crawl_settings", mocks["get_crawl_settings"])
+    monkeypatch.setattr(
+        pipeline, "list_enabled_dynamic_fields", mocks["list_enabled_dynamic_fields"]
+    )
     monkeypatch.setattr(pipeline, "discover", mocks["discover"])
     monkeypatch.setattr(pipeline, "enrich_website", mocks["enrich_website"])
     monkeypatch.setattr(dedupe, "upsert_discovered", mocks["upsert_discovered"])
+    monkeypatch.setattr(
+        dedupe, "merge_fuzzy_duplicate_if_found", mocks["merge_fuzzy_duplicate_if_found"]
+    )
     monkeypatch.setattr(dedupe, "needs_enrichment", mocks["needs_enrichment"])
     monkeypatch.setattr(dedupe, "apply_enrichment", mocks["apply_enrichment"])
+    monkeypatch.setattr(dedupe, "apply_ai_extras", mocks["apply_ai_extras"])
+    monkeypatch.setattr(llm, "extract_field", mocks["extract_field"])
+    monkeypatch.setattr(metrics, "increment_metric", mocks["increment_metric"])
     monkeypatch.setattr(dedupe, "mark_enrichment_status", mocks["mark_enrichment_status"])
     monkeypatch.setattr(dedupe, "mark_enrichment_failed", mocks["mark_enrichment_failed"])
     monkeypatch.setattr(job_queries, "write_log", mocks["write_log"])
@@ -129,7 +168,7 @@ async def test_run_job_happy_path_completes(patched: dict[str, AsyncMock]) -> No
     job = _job()
     patched["discover"].return_value = [_discovered("A"), _discovered("B", website_url=None)]
 
-    await pipeline.run_job(pool, job)
+    await pipeline.run_job(pool, job, _worker_settings())
 
     patched["finish_job"].assert_awaited_once_with(pool, job.id, "completed")
     # A has a website -> enriched via Tier-1; B has none -> marked enriched directly (no site).
@@ -147,7 +186,7 @@ async def test_run_job_cancelled_before_any_business_reaches_cancelled_status(
     patched["discover"].return_value = [_discovered("A")]
     patched["refresh_job"].return_value = _job(cancel_requested=True)
 
-    await pipeline.run_job(pool, job)
+    await pipeline.run_job(pool, job, _worker_settings())
 
     patched["finish_job"].assert_awaited_once_with(pool, job.id, "cancelled")
     patched["upsert_discovered"].assert_not_awaited()  # never got to process the business
@@ -172,7 +211,7 @@ async def test_run_job_pauses_then_resumes(
     patched["refresh_job"].side_effect = refresh_side_effect
     monkeypatch.setattr(pipeline, "PAUSE_POLL_SECONDS", 0)  # don't actually sleep in tests
 
-    await pipeline.run_job(pool, job)
+    await pipeline.run_job(pool, job, _worker_settings())
 
     patched["set_job_status"].assert_any_await(pool, job.id, "paused")
     patched["set_job_status"].assert_any_await(pool, job.id, "crawling")
@@ -188,7 +227,7 @@ async def test_run_job_enrichment_failure_does_not_abort_the_job(
     patched["discover"].return_value = [_discovered("A")]
     patched["enrich_website"].side_effect = RuntimeError("site is down")
 
-    await pipeline.run_job(pool, job)
+    await pipeline.run_job(pool, job, _worker_settings())
 
     patched["mark_enrichment_failed"].assert_awaited_once()
     patched["increment_counters"].assert_any_await(pool, job.id, failed=1)
@@ -204,7 +243,7 @@ async def test_run_job_skips_enrichment_for_already_fresh_business(
     patched["discover"].return_value = [_discovered("A")]
     patched["needs_enrichment"].return_value = False
 
-    await pipeline.run_job(pool, job)
+    await pipeline.run_job(pool, job, _worker_settings())
 
     patched["enrich_website"].assert_not_awaited()
     patched["mark_enrichment_status"].assert_not_awaited()  # has a website, just skipped
@@ -219,7 +258,7 @@ async def test_run_job_reaches_failed_status_on_unexpected_error(
     job = _job()
     patched["discover"].side_effect = RuntimeError("overpass exploded")
 
-    await pipeline.run_job(pool, job)
+    await pipeline.run_job(pool, job, _worker_settings())
 
     await_args = patched["finish_job"].await_args
     assert await_args is not None
@@ -238,8 +277,190 @@ async def test_run_job_releases_claim_on_shutdown_instead_of_cancelling(
     shutdown_event = asyncio.Event()
     shutdown_event.set()
 
-    await pipeline.run_job(pool, job, shutdown_event=shutdown_event)
+    await pipeline.run_job(pool, job, _worker_settings(), shutdown_event=shutdown_event)
 
     patched["release_job"].assert_awaited_once_with(pool, job.id)
     patched["finish_job"].assert_not_awaited()  # neither 'completed' nor 'cancelled'
     patched["upsert_discovered"].assert_not_awaited()  # never started processing the batch
+
+
+@pytest.mark.asyncio
+async def test_run_job_shutdown_mid_discovery_releases_job_instead_of_orphaning_it(
+    patched: dict[str, AsyncMock],
+) -> None:
+    """Regression test — a container restart while discover() was still mid-flight (e.g. a
+    large tiled radius doing several sequential Overpass calls) used to leave the job stuck in
+    'discovering' forever: the pause/cancel/shutdown checks only ran BETWEEN processing batches,
+    which is after discovery had already fully finished. Verified real in production (a
+    35km-radius job orphaned by a routine backend redeploy) — see pipeline.py's
+    _run_discovery_interruptibly."""
+    pool = FakePool()
+    job = _job()
+    shutdown_event = asyncio.Event()
+
+    async def slow_discover(*_args: object, **_kwargs: object) -> list[object]:
+        # Long enough that the shutdown_event (set concurrently, below) reliably wins the race
+        # against this "still in flight" discovery call, without making the test itself slow.
+        await asyncio.sleep(0.2)
+        return [_discovered("A")]
+
+    patched["discover"].side_effect = slow_discover
+
+    async def trigger_shutdown_shortly_after_start() -> None:
+        await asyncio.sleep(0.02)
+        shutdown_event.set()
+
+    await asyncio.gather(
+        pipeline.run_job(pool, job, _worker_settings(), shutdown_event=shutdown_event),
+        trigger_shutdown_shortly_after_start(),
+    )
+
+    patched["release_job"].assert_awaited_once_with(pool, job.id)
+    patched["finish_job"].assert_not_awaited()
+    patched["upsert_discovered"].assert_not_awaited()  # discovery never got to finish
+
+
+@pytest.mark.asyncio
+async def test_run_job_runs_ai_extraction_when_dynamic_fields_enabled(
+    patched: dict[str, AsyncMock],
+) -> None:
+    pool = FakePool()
+    job = _job()
+    patched["get_crawl_settings"].return_value = _settings(use_ai_extraction=True)
+    field = _dynamic_field()
+    patched["list_enabled_dynamic_fields"].return_value = [field]
+    patched["discover"].return_value = [_discovered("A")]
+    patched["enrich_website"].return_value = Tier1Result(page_text="Founded in 2015 in Berlin.")
+    patched["extract_field"].return_value = "2015"
+
+    await pipeline.run_job(pool, job, _worker_settings())
+
+    patched["extract_field"].assert_awaited_once()
+    extract_call = patched["extract_field"].await_args
+    assert extract_call is not None
+    assert extract_call.kwargs["field_key"] == "founded_year"
+    assert extract_call.kwargs["page_text"] == "Founded in 2015 in Berlin."
+    patched["apply_ai_extras"].assert_awaited_once()
+    extras_call = patched["apply_ai_extras"].await_args
+    assert extras_call is not None
+    assert extras_call.args[2] == {"founded_year": "2015"}
+    patched["finish_job"].assert_awaited_once_with(pool, job.id, "completed")
+
+
+@pytest.mark.asyncio
+async def test_run_job_skips_ai_extraction_when_use_ai_extraction_off(
+    patched: dict[str, AsyncMock],
+) -> None:
+    pool = FakePool()
+    job = _job()
+    # _settings() default has use_ai_extraction=False.
+    patched["discover"].return_value = [_discovered("A")]
+    patched["enrich_website"].return_value = Tier1Result(page_text="Some page text.")
+
+    await pipeline.run_job(pool, job, _worker_settings())
+
+    patched["list_enabled_dynamic_fields"].assert_not_awaited()
+    patched["extract_field"].assert_not_awaited()
+    patched["apply_ai_extras"].assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_run_job_skips_ai_extraction_when_tier1_yielded_no_page_text(
+    patched: dict[str, AsyncMock],
+) -> None:
+    pool = FakePool()
+    job = _job()
+    patched["get_crawl_settings"].return_value = _settings(use_ai_extraction=True)
+    patched["list_enabled_dynamic_fields"].return_value = [_dynamic_field()]
+    patched["discover"].return_value = [_discovered("A")]
+    patched["enrich_website"].return_value = Tier1Result()  # page_text defaults to ""
+
+    await pipeline.run_job(pool, job, _worker_settings())
+
+    patched["extract_field"].assert_not_awaited()
+    patched["apply_ai_extras"].assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_ai_extras_write_failure_does_not_mark_business_failed(
+    patched: dict[str, AsyncMock],
+) -> None:
+    pool = FakePool()
+    job = _job()
+    patched["get_crawl_settings"].return_value = _settings(use_ai_extraction=True)
+    patched["list_enabled_dynamic_fields"].return_value = [_dynamic_field()]
+    patched["discover"].return_value = [_discovered("A")]
+    patched["enrich_website"].return_value = Tier1Result(page_text="Founded in 2015.")
+    patched["extract_field"].return_value = "2015"
+    patched["apply_ai_extras"].side_effect = RuntimeError("db write failed")
+
+    await pipeline.run_job(pool, job, _worker_settings())
+
+    # The already-successful Tier-1 enrichment must not be retroactively marked failed just
+    # because the optional AI-extras write blew up.
+    patched["mark_enrichment_failed"].assert_not_awaited()
+    patched["finish_job"].assert_awaited_once_with(pool, job.id, "completed")
+
+
+@pytest.mark.asyncio
+async def test_run_job_records_tier2_metric_when_tier2_was_used(
+    patched: dict[str, AsyncMock],
+) -> None:
+    pool = FakePool()
+    job = _job()
+    patched["discover"].return_value = [_discovered("A")]
+    patched["enrich_website"].return_value = Tier1Result(used_tier2=True)
+
+    await pipeline.run_job(pool, job, _worker_settings())
+
+    patched["increment_metric"].assert_any_await(pool, "tier2_renders_total")
+
+
+@pytest.mark.asyncio
+async def test_run_job_skips_tier2_metric_when_tier1_sufficed(
+    patched: dict[str, AsyncMock],
+) -> None:
+    pool = FakePool()
+    job = _job()
+    patched["discover"].return_value = [_discovered("A")]
+    patched["enrich_website"].return_value = Tier1Result(used_tier2=False)
+
+    await pipeline.run_job(pool, job, _worker_settings())
+
+    patched["increment_metric"].assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_run_job_records_llm_call_metric_per_dynamic_field(
+    patched: dict[str, AsyncMock],
+) -> None:
+    pool = FakePool()
+    job = _job()
+    patched["get_crawl_settings"].return_value = _settings(use_ai_extraction=True)
+    patched["list_enabled_dynamic_fields"].return_value = [
+        _dynamic_field(key="founded_year"),
+        _dynamic_field(key="employee_count"),
+    ]
+    patched["discover"].return_value = [_discovered("A")]
+    patched["enrich_website"].return_value = Tier1Result(page_text="Some page text.")
+
+    await pipeline.run_job(pool, job, _worker_settings())
+
+    assert patched["increment_metric"].await_count == 2  # one per dynamic field
+    patched["increment_metric"].assert_any_await(pool, "llm_calls_total")
+
+
+@pytest.mark.asyncio
+async def test_run_job_tier2_metric_failure_does_not_mark_business_failed(
+    patched: dict[str, AsyncMock],
+) -> None:
+    pool = FakePool()
+    job = _job()
+    patched["discover"].return_value = [_discovered("A")]
+    patched["enrich_website"].return_value = Tier1Result(used_tier2=True)
+    patched["increment_metric"].side_effect = RuntimeError("metrics table unreachable")
+
+    await pipeline.run_job(pool, job, _worker_settings())
+
+    patched["mark_enrichment_failed"].assert_not_awaited()
+    patched["finish_job"].assert_awaited_once_with(pool, job.id, "completed")

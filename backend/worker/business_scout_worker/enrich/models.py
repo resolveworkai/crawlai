@@ -31,3 +31,13 @@ class Tier1Result(BaseModel):
     hero_image_url: str | None = None
     image_urls: list[str] = []
     """Additional business photos beyond logo/hero — req #9 (>=3 photos)."""
+
+    page_text: str = ""
+    """Combined visible text of the homepage + any contact/about pages fetched — NOT persisted
+    to the businesses table (apply_enrichment only copies the fields it explicitly lists). Exists
+    solely so the pipeline can hand it to Phase 5's optional LLM extraction without re-fetching
+    the site a second time."""
+
+    used_tier2: bool = False
+    """True when the homepage needed the Tier-2 (Playwright) render escalation — see
+    tier1.py's use_tier2 branch. Phase 8's tier-hit-ratio metric (businesses.enrichment_tier)."""

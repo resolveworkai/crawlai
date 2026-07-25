@@ -9,6 +9,7 @@ import psycopg
 
 from business_scout_worker import pipeline
 from business_scout_worker.db import create_pool, ping_database
+from business_scout_worker.enrich import tier2
 from business_scout_worker.jobs import claim_pending_job
 from business_scout_worker.logging_config import configure_logging, get_logger
 from business_scout_worker.settings import load_settings
@@ -77,7 +78,7 @@ async def run() -> None:
                     job_id=str(job.id),
                     business_type=job.business_type,
                 )
-                await pipeline.run_job(pool, job, shutdown_event=stop_event)
+                await pipeline.run_job(pool, job, settings, shutdown_event=stop_event)
                 continue  # check immediately for another pending job — no need to wait
 
             wake_event.clear()
@@ -88,6 +89,7 @@ async def run() -> None:
         listen_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await listen_task
+        await tier2.close_browser()  # no-op if Tier-2 was never actually used this run
         await pool.close()
 
 

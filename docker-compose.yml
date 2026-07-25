@@ -28,6 +28,16 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile
+      # db/migrations lives at the repo root, outside the ./backend context — passed in as a
+      # named extra context so the image can bake the migrations in and apply them on start
+      # (docker-entrypoint.sh). Without this, a new migration silently never reaches the
+      # running dev DB and the code/schema drift apart — verified real failure, 2026-07-13.
+      additional_contexts:
+        migrations: ./db/migrations
+    # Explicit name:tag (name + version) rather than the Compose-derived implicit
+    # "business-scout-ai-backend:latest" — makes `docker images` legible and gives dev builds a
+    # real, bumpable version instead of an anonymous "latest" every rebuild silently overwrites.
+    image: business-scout-backend:0.1.0
     container_name: business-scout-backend
     environment:
       NODE_ENV: production
@@ -47,6 +57,25 @@ services:
       # is silently dropped by every browser over http://, breaking login with no visible
       # error. Override to true only once this stack sits behind real HTTPS. See config.ts.
       COOKIE_SECURE: "false"
+      # Phase 5 — optional AI extraction (see llm.py). The actual on/off switch is the DB-side
+      # crawl_settings.use_ai_extraction (Settings screen); these only say WHERE to send the
+      # call when it's on. Defaults point at the optional `ollama` service below (free/local) —
+      # override LLM_BASE_URL/LLM_API_KEY/LLM_MODEL to use Gemini/OpenAI instead. An unreachable
+      # LLM_BASE_URL (e.g. ollama never started) just makes AI extraction no-op, never fails a crawl.
+      LLM_BASE_URL: ${LLM_BASE_URL:-http://ollama:11434/v1}
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      LLM_MODEL: ${LLM_MODEL:-gemini-2.5-flash}
+      # Phase 7 — generated export files (xlsx/csv/json) live on a named volume so they survive
+      # a container restart; the DB row (exports table) and the file are cleaned up together on
+      # the same retention schedule (server.ts).
+      EXPORTS_DIR: /app/data/exports
+      EXPORT_RETENTION_DAYS: ${EXPORT_RETENTION_DAYS:-7}
+      # Phase 7 — public /api/v1 API keys, comma-separated. Blank by default (matching the
+      # GOOGLE_API_KEY/LLM_API_KEY pattern above — never commit a real key); set in a local
+      # .env to actually enable the public API for real use.
+      API_KEYS: ${API_KEYS:-}
+    volumes:
+      - business_scout_exports:/app/data/exports
     ports:
       - "4010:4000"
     depends_on:
@@ -67,6 +96,7 @@ services:
         # Baked into the client bundle at BUILD time (see Dockerfile) — the browser can't
         # resolve "backend", it needs the host-mapped port. See .env.example.
         VITE_API_URL: ${VITE_API_URL:-http://localhost:4010}
+    image: business-scout-frontend:0.1.0
     container_name: business-scout-frontend
     environment:
       NODE_ENV: production
@@ -94,3 +124,4 @@ services:
 volumes:
   business_scout_postgres_data:
   business_scout_ollama_data:
+  business_scout_exports:

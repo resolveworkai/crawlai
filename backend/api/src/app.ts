@@ -15,6 +15,8 @@ import { dynamicFieldsRouter } from "./routes/dynamicFields.js";
 import { settingsRouter } from "./routes/settings.js";
 import { statsRouter } from "./routes/stats.js";
 import { geocodeRouter } from "./routes/geocode.js";
+import { exportsRouter } from "./routes/exports.js";
+import { publicApiRouter } from "./routes/publicApi.js";
 
 // App assembly only — no listen() here (see server.ts). Keeping the two apart lets tests
 // import the app directly (supertest) without binding a real port.
@@ -36,8 +38,8 @@ export function createApp(): Express {
   app.use(settingsRouter);
   app.use(statsRouter);
   app.use(geocodeRouter);
-  // Future routers (exports — Phase 7; public /api/v1 — Phase 7) mount here later,
-  // versioned under /api/v1 where public.
+  app.use(exportsRouter);
+  app.use(publicApiRouter);
 
   app.use(notFoundHandler);
   app.use(errorHandler);

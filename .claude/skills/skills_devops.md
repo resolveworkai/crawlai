@@ -84,6 +84,51 @@ Everything through env vars, never hardcoded. `.env` is gitignored; `.env.exampl
 listing every var. Rotate the dev-default Postgres password and any placeholder secret before any deployment
 beyond local dev.
 
+## Build speed (Phase 8 performance pass)
+
+Two real, measured fixes — not speculative tuning:
+
+1. **Dependency layers split from source layers, everywhere.** The Python worker's
+   `pip install ./worker` used to run AFTER `COPY worker/business_scout_worker`, so every single
+   source-code change busted that layer and forced a full ~100s+ reinstall of psycopg/playwright/
+   pydantic/etc from PyPI on every rebuild — verified, not hypothetical (hit on every rebuild this
+   session). Fixed via an **editable pip install against a stub package** (`mkdir` + `touch
+   __init__.py`, `pip install --editable ./worker`, THEN `COPY` the real source) — editable mode
+   means site-packages holds a path-reference back to the source dir rather than a copy, so the
+   later source COPY is picked up immediately with zero reinstall. The dependency-install layer
+   now only re-runs when `pyproject.toml` itself changes. Node's `npm ci` was already correctly
+   split (package.json/lock copied before `npm run build`'s full source COPY) — no fix needed there.
+2. **BuildKit cache mounts** (`--mount=type=cache`) on every package-manager RUN (`npm ci` in both
+   Dockerfiles, `apt-get`/`pip install` in `backend/Dockerfile`) — persists the package manager's
+   own download cache across separate `docker build` invocations, independent of Docker's layer
+   cache. Even when a layer legitimately must re-run (e.g. a real dependency bump), the download
+   itself is skipped if already cached.
+
+**Measured** (this dev host, 2026-07-13): cold build (no BuildKit cache mounts populated yet) ~6
+minutes, dominated by the Playwright/Python base image's PyPI dependency downloads (one-time cost).
+**Warm, source-only-change rebuild: ~26s** (`docker compose build backend` after editing one
+worker `.py` file). **Full `docker compose up -d --build` with everything cached (both images
+warm, no source changes): ~41s** — comfortably under a 1m28s target. `docker compose build`/
+`up --build` already builds independent services (`backend`, `frontend`) in parallel by default in
+Compose v2 — no extra flag needed.
+
+## Migrations run on container start (schema-drift guard)
+
+`backend/docker-entrypoint.sh` applies `db/migrations` via node-pg-migrate BEFORE starting
+supervisord, and fails the boot (`set -e`) if a migration errors — a backend running against a
+schema it doesn't match just fails more confusingly later. This closed a real incident
+(2026-07-13): a new migration file was created but never manually applied to the running dev DB,
+so every enrichment write failed with "column enrichment_tier does not exist" and crawl jobs died
+mid-run while discovery itself worked fine. Wiring details, all three of which are load-bearing:
+- `node-pg-migrate` is a runtime **dependency** (not devDependency) of `backend/api` so it
+  survives `npm prune --omit=dev` into the final image.
+- `db/migrations` lives at the repo root, OUTSIDE the backend's `./backend` build context — it's
+  passed in via `additional_contexts: {migrations: ./db/migrations}` in docker-compose.yml and
+  `COPY --from=migrations` in the Dockerfile. Don't move it into `backend/` (Node owns it but
+  it's the shared cross-runtime contract; see skills_db.md).
+- node-pg-migrate reads **DATABASE_URL only** (ignores discrete DB_* vars) — already in the
+  container env.
+
 ## Free-by-default cost model
 
 Discovery (Overpass), enrichment Tiers 1–2, and the map UI cost nothing. The LLM tier (Tier 3) defaults to
