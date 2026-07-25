@@ -14,6 +14,7 @@ export const updateSettingsSchema = z
     request_delay_ms: z.coerce.number().int().min(0).max(60_000).optional(),
     use_ai_extraction: z.boolean().optional(),
     proxy_url: z.string().url().nullable().optional(),
+    ocr_max_results: z.coerce.number().int().min(1).max(1000).optional(),
   })
   .strict();
 

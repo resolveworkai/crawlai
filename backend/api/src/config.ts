@@ -53,7 +53,10 @@ const envSchema = z.object({
   // ones. Default is repo-relative for non-Docker dev.
   OCR_CAPTURES_DIR: z.string().min(1).default("./storage/ocr_captures"),
   OCR_CRAWL_RETENTION_DAYS: z.coerce.number().int().positive().default(5),
-  OCR_CRAWL_MAX_RESULTS: z.coerce.number().int().positive().max(200).default(25),
+  // Boot-time default only — the operator-facing ceiling is crawl_settings.ocr_max_results
+  // (DB-configurable via the Settings screen, up to 1000), enforced at request time in
+  // routes/ocrCrawl.ts. This just bounds what OCR_CRAWL_MAX_RESULTS itself may be set to.
+  OCR_CRAWL_MAX_RESULTS: z.coerce.number().int().positive().max(1000).default(25),
 });
 
 function loadConfig() {

@@ -23,6 +23,7 @@ type UpdateSettingsInput = Partial<
     | "request_delay_ms"
     | "use_ai_extraction"
     | "proxy_url"
+    | "ocr_max_results"
   >
 >;
 

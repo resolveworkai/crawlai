@@ -19,6 +19,7 @@ import { timeAgo } from "@/lib/utils";
 import { Camera, Download, Loader2, Star, Trash2, AlertTriangle } from "lucide-react";
 import { toast } from "sonner";
 import type { OcrBusiness, OcrJobStatus } from "@/types/api";
+import { useSettings } from "@/hooks/useSettings";
 
 export const Route = createFileRoute("/ocr-crawl")({
   component: () => (
@@ -48,6 +49,9 @@ function OcrCrawl() {
   const [expandHours, setExpandHours] = useState(false);
   const [selectedId, setSelectedId] = useState<string | undefined>(undefined);
   const [sortKey, setSortKey] = useState<SortKey>("idx");
+
+  const { data: settings } = useSettings();
+  const ocrMaxResults = settings?.ocr_max_results ?? 1000;
 
   const { data: jobs = [] } = useOcrJobs();
   const activeJob = jobs.find((j) => ACTIVE.has(j.status));
@@ -111,13 +115,18 @@ function OcrCrawl() {
             />
           </div>
           <div>
-            <label className="text-xs text-muted-foreground">Max results</label>
+            <label className="text-xs text-muted-foreground">
+              Max results{" "}
+              <span className="text-[10px]">(up to {ocrMaxResults}, configurable in Settings)</span>
+            </label>
             <Input
               type="number"
               min={1}
-              max={200}
+              max={ocrMaxResults}
               value={maxResults}
-              onChange={(e) => setMaxResults(Math.max(1, Number(e.target.value) || 1))}
+              onChange={(e) =>
+                setMaxResults(Math.min(ocrMaxResults, Math.max(1, Number(e.target.value) || 1)))
+              }
               className="mt-1 h-9 bg-input"
             />
           </div>

@@ -184,6 +184,7 @@ export interface CrawlSettings {
   request_delay_ms: number;
   use_ai_extraction: boolean;
   proxy_url: string | null;
+  ocr_max_results: number;
   updated_at: Date;
 }
 

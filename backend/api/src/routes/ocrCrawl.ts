@@ -23,6 +23,7 @@ import {
   notifyOcrJobs,
 } from "../db/ocrJobs.js";
 import { listOcrBusinesses } from "../db/ocrBusinesses.js";
+import { getCrawlSettings } from "../db/crawlSettings.js";
 import { buildOcrExport } from "../services/ocrExportService.js";
 import { config } from "../config.js";
 import { ConflictError, NotFoundError, ValidationError } from "../errors.js";
@@ -39,6 +40,12 @@ ocrCrawlRouter.post(
       throw new ConflictError("An OCR crawl job is already running — only one runs at a time");
     }
     const input = req.body as CreateOcrJobInput;
+    const { ocr_max_results: ocrMaxResults } = await getCrawlSettings();
+    if (input.maxResults > ocrMaxResults) {
+      throw new ValidationError(
+        `maxResults exceeds the configured limit (${ocrMaxResults}) — raise "OCR max results" in Settings`,
+      );
+    }
     const job = await createOcrJob({
       createdBy: req.user!.id,
       query: input.query,

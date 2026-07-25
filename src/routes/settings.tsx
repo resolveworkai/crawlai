@@ -36,6 +36,7 @@ function Settings() {
   const [followSitemaps, setFollowSitemaps] = useState(true);
   const [crawlWebsite, setCrawlWebsite] = useState(true);
   const [useAiExtraction, setUseAiExtraction] = useState(false);
+  const [ocrMaxResults, setOcrMaxResults] = useState(1000);
 
   useEffect(() => {
     if (!settings) return;
@@ -49,6 +50,7 @@ function Settings() {
     setFollowSitemaps(settings.follow_sitemaps);
     setCrawlWebsite(settings.crawl_website);
     setUseAiExtraction(settings.use_ai_extraction);
+    setOcrMaxResults(settings.ocr_max_results);
   }, [settings]);
 
   function handleSave() {
@@ -64,6 +66,7 @@ function Settings() {
         follow_sitemaps: followSitemaps,
         crawl_website: crawlWebsite,
         use_ai_extraction: useAiExtraction,
+        ocr_max_results: ocrMaxResults,
       },
       {
         onSuccess: () => toast.success("Settings saved"),
@@ -194,6 +197,20 @@ function Settings() {
                   min={1}
                   max={10_000}
                   step={50}
+                  disabled={!isAdmin}
+                />
+              </div>
+              <div>
+                <div className="mb-1 flex items-center justify-between">
+                  <span className="text-xs">OCR max results / job</span>
+                  <span className="font-mono text-xs text-primary">{ocrMaxResults}</span>
+                </div>
+                <Slider
+                  value={[ocrMaxResults]}
+                  onValueChange={([v]) => setOcrMaxResults(v)}
+                  min={1}
+                  max={1000}
+                  step={25}
                   disabled={!isAdmin}
                 />
               </div>
