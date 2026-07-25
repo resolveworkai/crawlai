@@ -4,6 +4,7 @@ import { config } from "./config.js";
 import { logger } from "./logger.js";
 import { pool } from "./db/pool.js";
 import { cleanupExpiredExports } from "./services/exportService.js";
+import { purgeExpiredOcrCaptures } from "./lib/ocrRetention.js";
 
 const app = createApp();
 
@@ -29,9 +30,22 @@ function runExportCleanup(): void {
 runExportCleanup();
 const exportCleanupTimer = setInterval(runExportCleanup, EXPORT_CLEANUP_INTERVAL_MS);
 
+// Crawl-OCR capture retention (§2) — same boot + daily-interval pattern as exports above.
+const OCR_CLEANUP_INTERVAL_MS = 24 * 60 * 60 * 1000;
+
+function runOcrCleanup(): void {
+  purgeExpiredOcrCaptures().catch((err: unknown) => {
+    logger.error({ err }, "ocr-crawl capture purge failed");
+  });
+}
+
+runOcrCleanup();
+const ocrCleanupTimer = setInterval(runOcrCleanup, OCR_CLEANUP_INTERVAL_MS);
+
 async function shutdown(signal: string): Promise<void> {
   logger.info({ signal }, "shutting down");
   clearInterval(exportCleanupTimer);
+  clearInterval(ocrCleanupTimer);
   server.close(() => {
     void pool.end().finally(() => process.exit(0));
   });

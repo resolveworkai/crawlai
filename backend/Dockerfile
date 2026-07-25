@@ -49,14 +49,15 @@ RUN npm run build && npm prune --omit=dev
 # --- final: Playwright/Python base + Node runtime + both services ----------
 FROM mcr.microsoft.com/playwright/python:v1.61.0-noble
 
-# Node.js runtime (the Playwright/Python base image ships Python only). apt's package cache
-# AND repo-listing metadata are both BuildKit-cache-mounted — a cache mount lives outside the
-# image layer entirely (BuildKit keeps it on the host, not in any committed layer), so there's
-# no `rm -rf /var/lib/apt/lists/*` needed here to keep the final image lean; it was never
-# written to a layer in the first place.
+# Node.js runtime (the Playwright/Python base image ships Python only) + tesseract-ocr (the
+# Crawl-OCR module's OCR engine — see business_scout_worker/ocr/). apt's package cache AND
+# repo-listing metadata are both BuildKit-cache-mounted — a cache mount lives outside the image
+# layer entirely (BuildKit keeps it on the host, not in any committed layer), so there's no
+# `rm -rf /var/lib/apt/lists/*` needed here to keep the final image lean; it was never written
+# to a layer in the first place.
 RUN --mount=type=cache,target=/var/cache/apt --mount=type=cache,target=/var/lib/apt/lists \
   apt-get update \
-  && apt-get install -y --no-install-recommends curl ca-certificates \
+  && apt-get install -y --no-install-recommends curl ca-certificates tesseract-ocr \
   && curl -fsSL https://deb.nodesource.com/setup_24.x | bash - \
   && apt-get install -y --no-install-recommends nodejs
 

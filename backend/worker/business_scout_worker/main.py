@@ -12,6 +12,8 @@ from business_scout_worker.db import create_pool, ping_database
 from business_scout_worker.enrich import tier2
 from business_scout_worker.jobs import claim_pending_job
 from business_scout_worker.logging_config import configure_logging, get_logger
+from business_scout_worker.ocr import pipeline as ocr_pipeline
+from business_scout_worker.ocr.jobs import claim_pending_ocr_job, recover_orphaned_ocr_jobs
 from business_scout_worker.settings import load_settings
 
 # psycopg3's async mode cannot run on Windows' default ProactorEventLoop — it needs
@@ -32,6 +34,7 @@ async def _listen_loop(conninfo: str, wake_event: asyncio.Event, stop_event: asy
         try:
             async with await psycopg.AsyncConnection.connect(conninfo, autocommit=True) as conn:
                 await conn.execute("LISTEN crawl_jobs")
+                await conn.execute("LISTEN ocr_crawl_jobs")  # Crawl-OCR module shares this daemon
                 async for _notify in conn.notifies():
                     wake_event.set()
                     if stop_event.is_set():
@@ -70,6 +73,12 @@ async def run() -> None:
         healthy = await ping_database(pool)
         logger.info("startup heartbeat", database_healthy=healthy)
 
+        # Self-heal OCR jobs orphaned in a running state by a previous hard restart (they'd
+        # otherwise spin forever — the claim query only takes 'queued'). See ocr/jobs.py.
+        recovered = await recover_orphaned_ocr_jobs(pool)
+        if recovered:
+            logger.info("recovered orphaned ocr jobs", count=recovered)
+
         while not stop_event.is_set():
             job = await claim_pending_job(pool)
             if job is not None:
@@ -80,6 +89,13 @@ async def run() -> None:
                 )
                 await pipeline.run_job(pool, job, settings, shutdown_event=stop_event)
                 continue  # check immediately for another pending job — no need to wait
+
+            # Crawl-OCR jobs share this daemon (parallel job type, separate table + channel).
+            ocr_job = await claim_pending_ocr_job(pool)
+            if ocr_job is not None:
+                logger.info("ocr job claimed", ocr_job_id=str(ocr_job.id), query=ocr_job.query)
+                await ocr_pipeline.run_ocr_job(pool, ocr_job, settings, shutdown_event=stop_event)
+                continue
 
             wake_event.clear()
             with contextlib.suppress(TimeoutError):

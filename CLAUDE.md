@@ -110,6 +110,43 @@ on this status for a deploy decision.
   dependency/source layer-split + BuildKit-cache-mounted (source-only rebuild ~26s, full cached
   up ~41s); the public-API rate limiter's IP fallback is IPv6-safe (`ipKeyGenerator`). End-to-end
   proof: a real Delhi "Gym" crawl — 120 discovered, 120 crawled, 0 failures.
+- **Crawl (OCR) add-on module** (`md/OCR_CRAWL.md`): a *parallel job type* to the Overpass crawler
+  that opens each Google Maps business's place page and captures structured contact data + a
+  screenshot audit trail. Same DB-as-queue seam: `ocr_jobs`/`ocr_businesses` (migrations
+  `1784000000000`, `1784100000000` current_business, `1784200000000` image_url), Node
+  `routes/ocrCrawl.ts` + `db/ocrJobs.ts`, Python `business_scout_worker/ocr/` (capture via
+  Playwright + Stage-B Tesseract/parse), UI `src/routes/ocr-crawl.tsx` ("Crawl (OCR)" nav).
+  **Verified live end-to-end (2026-07-25, 15/15 Al Nahda-Dubai gyms, 0 failures/timeouts):**
+  - **Capture navigates to the place `href`, never clicks the result card** — a live diagnostic
+    proved a programmatic click does not reliably open the detail panel on the current Maps DOM
+    (every click timed out with only the feed's own `role=main` present); `page.goto(href)` opens
+    the place view directly and is both more robust and faster. Two Playwright pages: one stays on
+    the search feed (scrolling/collecting hrefs), a second navigates per-business.
+  - **Phone/website/address/plus-code/rating/category/hero-image come from `data-item-id`
+    DOM attributes** (`_extract_dom_fields` in `capture.py`), not OCR — exact, no misreads. OCR
+    (Tesseract) is the fallback for whatever the DOM doesn't expose, plus the visual audit trail.
+    Live proof: 15/15 phones and ratings correct; the earlier reported "OCR can't read the phone"
+    bug doesn't reproduce once DOM extraction is used instead of pixel-reading it.
+  - **Review count is NOT reliably obtainable**: an anonymous/logged-out Playwright session gets
+    Google's "You're seeing a limited view of Google Maps" degraded mode, which omits review count
+    from both the place page and the search feed cards (confirmed: same business shows it in a
+    real logged-in browser, not in ours). Getting it back requires a real Google account login,
+    which is a deliberate non-goal (ToS/detection risk — see below). `review_count` stays null on
+    this data source; treat it as a known gap, not a bug to keep chasing.
+  - **Tesseract: `OMP_THREAD_LIMIT=1`** — measured 5.5x SLOWER (16.1s vs 2.9s) multi-threaded on
+    this app's image sizes; set at both the Python module level and docker-compose.
+  - **`OCR_CONCURRENCY`** (default 3, `settings.ocr_concurrency`) — Stage B now runs this many
+    businesses' OCR concurrently (`asyncio.Semaphore` + `asyncio.gather` in `pipeline.py`), each
+    call still single-threaded internally. Orthogonal to the OMP fix above: that fix is about one
+    image being slower multi-threaded internally; this is about using multiple CPU cores across a
+    batch by running several single-threaded calls in parallel.
+  - Progress counters (`captured_count`/`ocr_done_count`/`current_business`) update correctly
+    through both capture and OCR phases and denominate against `max_results`, not a racing
+    discovered-count.
+  Needs `tesseract-ocr` (apt in Dockerfile) + pytesseract/Pillow/opencv-headless. Single-flight
+  (DB partial-unique index), retention purge of `raw/` PNGs, CAPTCHA→`blocked` stop.
+  **⚠️ ToS: automating Maps violates it — low-volume/internal only; Places API is the compliant
+  path for the same fields.**
 - **Known follow-up, not yet done**: `supabase/` (CLI config + old Lovable-era migrations) is dead
   weight left over from the original scaffold — the real schema is `db/migrations/*.sql` via
   node-pg-migrate. Safe to delete, just hasn't been done. Prod deployment target (which host, TLS
@@ -147,6 +184,7 @@ Every list/single-resource endpoint wraps its payload in a named envelope (`{job
 | `/geocode` | `GET /?q=` (Nominatim proxy) |
 | `/exports` | `GET /` (history), `POST /` (generate xlsx/csv/json, operator+), `GET /:id/download` |
 | `/api/v1` | `GET /businesses` (api-key auth, rate-limited 120/min/key), `GET /openapi.json` (unauthenticated) |
+| `/ocr-crawl` | `POST /jobs` (operator+, 409 single-flight), `GET /jobs`, `GET /jobs/:id` (+progress), `GET /jobs/:id/results`, `GET /jobs/:id/export?format=csv\|xlsx`, `GET /jobs/:id/images/*splat` (screenshot), `DELETE /jobs/:id` (operator+) |
 | `/health` | `GET /` (checks DB) |
 
 ## Project convention — approved-plan archival (REQUIREMENT)

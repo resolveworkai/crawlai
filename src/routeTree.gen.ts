@@ -10,6 +10,7 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as SettingsRouteImport } from './routes/settings'
+import { Route as OcrCrawlRouteImport } from './routes/ocr-crawl'
 import { Route as LoginRouteImport } from './routes/login'
 import { Route as JobsRouteImport } from './routes/jobs'
 import { Route as FieldsRouteImport } from './routes/fields'
@@ -21,6 +22,11 @@ import { Route as IndexRouteImport } from './routes/index'
 const SettingsRoute = SettingsRouteImport.update({
   id: '/settings',
   path: '/settings',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const OcrCrawlRoute = OcrCrawlRouteImport.update({
+  id: '/ocr-crawl',
+  path: '/ocr-crawl',
   getParentRoute: () => rootRouteImport,
 } as any)
 const LoginRoute = LoginRouteImport.update({
@@ -67,6 +73,7 @@ export interface FileRoutesByFullPath {
   '/fields': typeof FieldsRoute
   '/jobs': typeof JobsRoute
   '/login': typeof LoginRoute
+  '/ocr-crawl': typeof OcrCrawlRoute
   '/settings': typeof SettingsRoute
 }
 export interface FileRoutesByTo {
@@ -77,6 +84,7 @@ export interface FileRoutesByTo {
   '/fields': typeof FieldsRoute
   '/jobs': typeof JobsRoute
   '/login': typeof LoginRoute
+  '/ocr-crawl': typeof OcrCrawlRoute
   '/settings': typeof SettingsRoute
 }
 export interface FileRoutesById {
@@ -88,6 +96,7 @@ export interface FileRoutesById {
   '/fields': typeof FieldsRoute
   '/jobs': typeof JobsRoute
   '/login': typeof LoginRoute
+  '/ocr-crawl': typeof OcrCrawlRoute
   '/settings': typeof SettingsRoute
 }
 export interface FileRouteTypes {
@@ -100,6 +109,7 @@ export interface FileRouteTypes {
     | '/fields'
     | '/jobs'
     | '/login'
+    | '/ocr-crawl'
     | '/settings'
   fileRoutesByTo: FileRoutesByTo
   to:
@@ -110,6 +120,7 @@ export interface FileRouteTypes {
     | '/fields'
     | '/jobs'
     | '/login'
+    | '/ocr-crawl'
     | '/settings'
   id:
     | '__root__'
@@ -120,6 +131,7 @@ export interface FileRouteTypes {
     | '/fields'
     | '/jobs'
     | '/login'
+    | '/ocr-crawl'
     | '/settings'
   fileRoutesById: FileRoutesById
 }
@@ -131,6 +143,7 @@ export interface RootRouteChildren {
   FieldsRoute: typeof FieldsRoute
   JobsRoute: typeof JobsRoute
   LoginRoute: typeof LoginRoute
+  OcrCrawlRoute: typeof OcrCrawlRoute
   SettingsRoute: typeof SettingsRoute
 }
 
@@ -141,6 +154,13 @@ declare module '@tanstack/react-router' {
       path: '/settings'
       fullPath: '/settings'
       preLoaderRoute: typeof SettingsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/ocr-crawl': {
+      id: '/ocr-crawl'
+      path: '/ocr-crawl'
+      fullPath: '/ocr-crawl'
+      preLoaderRoute: typeof OcrCrawlRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/login': {
@@ -203,6 +223,7 @@ const rootRouteChildren: RootRouteChildren = {
   FieldsRoute: FieldsRoute,
   JobsRoute: JobsRoute,
   LoginRoute: LoginRoute,
+  OcrCrawlRoute: OcrCrawlRoute,
   SettingsRoute: SettingsRoute,
 }
 export const routeTree = rootRouteImport

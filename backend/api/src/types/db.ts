@@ -199,3 +199,61 @@ export interface ExportRecord {
   created_at: Date;
   expires_at: Date | null;
 }
+
+// Crawl-OCR module (db/migrations/*ocr-crawl.sql). Parallel job type to CrawlJob, processed by
+// the same Python worker daemon via a separate pg_notify channel.
+export type OcrJobStatus =
+  | "queued"
+  | "capturing"
+  | "ocr"
+  | "parsing"
+  | "ready"
+  | "failed"
+  | "blocked";
+
+export type OcrEndReason = "end_of_list" | "max_results" | "stagnation" | "blocked" | "error";
+
+export interface OcrJob {
+  id: string;
+  created_by: string | null;
+  query: string;
+  location: string;
+  max_results: number;
+  expand_hours: boolean;
+  langs: string;
+  status: OcrJobStatus;
+  end_reason: OcrEndReason | null;
+  total_count: number;
+  captured_count: number;
+  ocr_done_count: number;
+  error_message: string | null;
+  current_business: string | null;
+  storage_dir: string | null;
+  created_at: Date;
+  started_at: Date | null;
+  finished_at: Date | null;
+}
+
+export interface OcrBusiness {
+  id: string;
+  job_id: string;
+  idx: number;
+  name: string;
+  maps_url: string | null;
+  rating: number | null;
+  review_count: number | null;
+  category: string | null;
+  address: string | null;
+  phone: string | null;
+  website: string | null;
+  plus_code: string | null;
+  hours_summary: string | null;
+  hours_weekly: Record<string, unknown> | null;
+  email: string | null;
+  image_url: string | null;
+  ocr_confidence: number | null;
+  needs_review: boolean;
+  raw_text: string | null;
+  source_images: string[];
+  created_at: Date;
+}

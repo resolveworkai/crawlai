@@ -265,3 +265,66 @@ describe("Phase 7 — exports", () => {
     expect(res.status).toBe(401);
   });
 });
+
+describe("Crawl-OCR jobs", () => {
+  const createdOcrJobIds: string[] = [];
+
+  afterAll(async () => {
+    if (createdOcrJobIds.length > 0) {
+      await pool.query("DELETE FROM ocr_jobs WHERE id = ANY($1)", [createdOcrJobIds]);
+    }
+  });
+
+  it("rejects unauthenticated + viewer job creation, allows operator", async () => {
+    const noauth = await request(app)
+      .post("/ocr-crawl/jobs")
+      .send({ query: "gym", location: "Al Nahda, Dubai" });
+    expect(noauth.status).toBe(401);
+
+    const denied = await viewerAgent
+      .post("/ocr-crawl/jobs")
+      .send({ query: "gym", location: "Al Nahda, Dubai" });
+    expect(denied.status).toBe(403);
+
+    const allowed = await operatorAgent
+      .post("/ocr-crawl/jobs")
+      .send({ query: "gym", location: "Al Nahda, Dubai", maxResults: 5 });
+    expect(allowed.status).toBe(201);
+    expect(allowed.body.job.status).toBe("queued");
+    createdOcrJobIds.push(allowed.body.job.id);
+  });
+
+  it("enforces the single-flight lock with a 409", async () => {
+    // A job from the previous test is still 'queued' (worker not running in this test) → active.
+    const second = await operatorAgent
+      .post("/ocr-crawl/jobs")
+      .send({ query: "library", location: "Haldwani", maxResults: 5 });
+    expect(second.status).toBe(409);
+  });
+
+  it("lists jobs and returns progress for one (any role)", async () => {
+    const listRes = await viewerAgent.get("/ocr-crawl/jobs");
+    expect(listRes.status).toBe(200);
+    const id = createdOcrJobIds[0];
+    const detail = await viewerAgent.get(`/ocr-crawl/jobs/${id}`);
+    expect(detail.status).toBe(200);
+    expect(detail.body.progress).toHaveProperty("captured");
+
+    const results = await viewerAgent.get(`/ocr-crawl/jobs/${id}/results`);
+    expect(results.status).toBe(200);
+    expect(Array.isArray(results.body.businesses)).toBe(true);
+  });
+
+  it("exports an (empty) job to csv", async () => {
+    const id = createdOcrJobIds[0];
+    const res = await viewerAgent.get(`/ocr-crawl/jobs/${id}/export?format=csv`);
+    expect(res.status).toBe(200);
+    expect(res.headers["content-disposition"]).toContain("attachment");
+  });
+
+  it("operator can delete an OCR job", async () => {
+    const id = createdOcrJobIds.pop() as string;
+    const res = await operatorAgent.delete(`/ocr-crawl/jobs/${id}`);
+    expect(res.status).toBe(204);
+  });
+});

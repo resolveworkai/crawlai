@@ -1,0 +1,85 @@
+/** Authored by: Mohit Singh */
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { api, fileUrl } from "@/lib/api-client";
+import type { OcrBusiness, OcrJob } from "@/types/api";
+
+export const ocrKeys = {
+  all: ["ocr-crawl"] as const,
+  list: () => [...ocrKeys.all, "list"] as const,
+  detail: (id: string) => [...ocrKeys.all, "detail", id] as const,
+  results: (id: string) => [...ocrKeys.all, "results", id] as const,
+};
+
+interface CreateOcrJobInput {
+  query: string;
+  location: string;
+  maxResults: number;
+  expandHours: boolean;
+  langs?: string;
+}
+
+const ACTIVE: ReadonlySet<string> = new Set(["queued", "capturing", "ocr", "parsing"]);
+
+export function useOcrJobs() {
+  return useQuery({
+    queryKey: ocrKeys.list(),
+    queryFn: async () => (await api.get<{ jobs: OcrJob[] }>("/ocr-crawl/jobs")).jobs,
+    // Poll while any job is active so the list reflects live status.
+    refetchInterval: (query) =>
+      (query.state.data ?? []).some((j) => ACTIVE.has(j.status)) ? 2_000 : false,
+  });
+}
+
+interface OcrJobDetail {
+  job: OcrJob;
+  progress: { total: number; captured: number; ocrDone: number };
+}
+
+export function useOcrJob(id: string | undefined) {
+  return useQuery({
+    queryKey: ocrKeys.detail(id ?? ""),
+    queryFn: () => api.get<OcrJobDetail>(`/ocr-crawl/jobs/${id}`),
+    enabled: id !== undefined,
+    refetchInterval: (query) =>
+      query.state.data && ACTIVE.has(query.state.data.job.status) ? 2_000 : false,
+  });
+}
+
+export function useOcrResults(id: string | undefined, enabled: boolean) {
+  return useQuery({
+    queryKey: ocrKeys.results(id ?? ""),
+    queryFn: async () =>
+      (await api.get<{ businesses: OcrBusiness[] }>(`/ocr-crawl/jobs/${id}/results`)).businesses,
+    enabled: id !== undefined && enabled,
+  });
+}
+
+export function useCreateOcrJob() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: CreateOcrJobInput) =>
+      (await api.post<{ job: OcrJob }>("/ocr-crawl/jobs", input)).job,
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ocrKeys.list() });
+    },
+  });
+}
+
+export function useDeleteOcrJob() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.delete<void>(`/ocr-crawl/jobs/${id}`),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ocrKeys.list() });
+    },
+  });
+}
+
+export function ocrExportUrl(id: string, format: "csv" | "xlsx"): string {
+  return fileUrl(`/ocr-crawl/jobs/${id}/export?format=${format}`);
+}
+
+export function ocrImageUrl(id: string, relPath: string): string {
+  // relPath is like "raw/001_slug_p1.png" — served by GET /ocr-crawl/jobs/:id/images/*
+  return fileUrl(`/ocr-crawl/jobs/${id}/images/${relPath}`);
+}

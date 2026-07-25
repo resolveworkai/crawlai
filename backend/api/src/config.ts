@@ -46,6 +46,14 @@ const envSchema = z.object({
   // explicit + tunable rather than relying on the library default silently capping concurrency
   // under load (e.g. many simultaneous SSE-streaming dashboard clients + API traffic).
   DB_POOL_MAX: z.coerce.number().int().positive().default(10),
+  // Crawl-OCR module — where captured Google Maps panel screenshots live (one subfolder per
+  // job). docker-compose mounts a named volume here; the images are purged after
+  // OCR_CRAWL_RETENTION_DAYS while the DB rows persist. The Node API and the Python worker BOTH
+  // resolve this same path — the worker writes PNGs, Node reads them for thumbnails + purges old
+  // ones. Default is repo-relative for non-Docker dev.
+  OCR_CAPTURES_DIR: z.string().min(1).default("./storage/ocr_captures"),
+  OCR_CRAWL_RETENTION_DAYS: z.coerce.number().int().positive().default(5),
+  OCR_CRAWL_MAX_RESULTS: z.coerce.number().int().positive().max(200).default(25),
 });
 
 function loadConfig() {

@@ -20,6 +20,13 @@ dependencies = [
   "playwright==1.61.0",
   "phonenumbers>=8.13,<9",
   "rapidfuzz>=3.10,<4",
+  # Crawl-OCR module (business_scout_worker/ocr/) — pytesseract shells out to the tesseract-ocr
+  # binary (apt-installed in backend/Dockerfile; local dev needs it on PATH or TESSERACT_CMD).
+  # Pillow for image load/preprocess; opencv-headless for the grayscale/upscale/threshold steps
+  # (headless variant: no GUI libs, correct for a server/container).
+  "pytesseract>=0.3.10,<1",
+  "Pillow>=10.4,<12",
+  "opencv-python-headless>=4.10,<5",
 ]
 
 [project.optional-dependencies]
@@ -58,6 +65,18 @@ select = ["E", "F", "I", "UP", "B", "SIM", "N"]
 strict = true
 python_version = "3.11"
 plugins = ["pydantic.mypy"]
+
+# Crawl-OCR deps: pytesseract + cv2 ship no type stubs; numpy's installed stubs use PEP-695
+# `type` syntax our pinned python_version=3.11 can't parse. Skip analyzing them (they're treated
+# as Any) rather than lowering strictness project-wide or bumping the target Python.
+[[tool.mypy.overrides]]
+module = ["pytesseract.*", "cv2.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["numpy.*"]
+follow_imports = "skip"
+follow_imports_for_stubs = true
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

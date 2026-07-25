@@ -125,6 +125,55 @@ export interface GeocodeResult {
   displayName: string;
 }
 
+export type OcrJobStatus =
+  "queued" | "capturing" | "ocr" | "parsing" | "ready" | "failed" | "blocked";
+
+export interface OcrJob {
+  id: string;
+  query: string;
+  location: string;
+  max_results: number;
+  expand_hours: boolean;
+  langs: string;
+  status: OcrJobStatus;
+  end_reason: string | null;
+  total_count: number;
+  captured_count: number;
+  ocr_done_count: number;
+  error_message: string | null;
+  // Live "what is being worked on right now" — powers the status line so a stalled counter is
+  // distinguishable from a hung job. Set by the worker on every item.
+  current_business: string | null;
+  storage_dir: string | null;
+  created_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+}
+
+export interface OcrBusiness {
+  id: string;
+  job_id: string;
+  idx: number;
+  name: string;
+  maps_url: string | null;
+  rating: number | null;
+  review_count: number | null;
+  category: string | null;
+  address: string | null;
+  phone: string | null;
+  website: string | null;
+  plus_code: string | null;
+  hours_summary: string | null;
+  hours_weekly: Record<string, unknown> | null;
+  email: string | null;
+  image_url: string | null;
+  ocr_confidence: number | null;
+  needs_review: boolean;
+  raw_text: string | null;
+  source_images: string[];
+  created_at: string;
+}
+
 export type ExportFormat = "xlsx" | "csv" | "json";
 
 export interface ExportRecord {

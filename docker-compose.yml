@@ -74,8 +74,24 @@ services:
       # GOOGLE_API_KEY/LLM_API_KEY pattern above — never commit a real key); set in a local
       # .env to actually enable the public API for real use.
       API_KEYS: ${API_KEYS:-}
+      # Crawl-OCR module — captured Google Maps screenshots live on a named volume so they
+      # survive restarts; purged after OCR_CRAWL_RETENTION_DAYS (DB rows persist). BOTH the Node
+      # API (reads/purges) and the Python worker (writes) resolve this same path. Headless in
+      # the container (there's no display); run headful only for local non-Docker dev.
+      # See ocr_engine.py: Tesseract's OpenMP threading makes it ~5.5x SLOWER on our image sizes.
+      # Set here too so it applies to the whole container, not just the one module's import.
+      OMP_THREAD_LIMIT: "1"
+      OCR_CAPTURES_DIR: /app/data/ocr_captures
+      OCR_CRAWL_RETENTION_DAYS: ${OCR_CRAWL_RETENTION_DAYS:-5}
+      OCR_CRAWL_HEADLESS: ${OCR_CRAWL_HEADLESS:-true}
+      # How many businesses' Tesseract OCR (Stage B) run concurrently within the one active OCR
+      # job. Each call is itself single-threaded (OMP_THREAD_LIMIT=1 above); this is the knob
+      # that uses multiple CPU cores across a batch. Default 3 — raise toward the container's
+      # core count minus 1 if OCR still looks slow; lower to 1 to fully serialize again.
+      OCR_CONCURRENCY: ${OCR_CONCURRENCY:-3}
     volumes:
       - business_scout_exports:/app/data/exports
+      - business_scout_ocr_captures:/app/data/ocr_captures
     ports:
       - "4010:4000"
     depends_on:
@@ -125,3 +141,4 @@ volumes:
   business_scout_postgres_data:
   business_scout_ollama_data:
   business_scout_exports:
+  business_scout_ocr_captures:

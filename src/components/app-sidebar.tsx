@@ -9,6 +9,7 @@ import {
   Settings,
   Radar,
   Download,
+  Camera,
   LogOut,
 } from "lucide-react";
 import {
@@ -30,6 +31,7 @@ import { useCurrentUser, useLogout } from "@/hooks/useAuth";
 const mainItems = [
   { title: "Overview", url: "/", icon: LayoutDashboard },
   { title: "Discover", url: "/discover", icon: MapPin },
+  { title: "Crawl (OCR)", url: "/ocr-crawl", icon: Camera },
   { title: "Businesses", url: "/businesses", icon: Building2 },
   { title: "Crawl Jobs", url: "/jobs", icon: ListChecks },
 ];

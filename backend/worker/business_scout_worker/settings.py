@@ -41,6 +41,28 @@ class Settings(BaseSettings):
     llm_timeout_s: float = Field(default=30.0, gt=0)
     llm_max_tokens: int = Field(default=500, gt=0)
 
+    # Crawl-OCR module (ocr/) — Google Maps screenshot capture + OCR. Shares OCR_CAPTURES_DIR
+    # with the Node API (Node reads/purges, this worker writes). Headless in the container (no
+    # display); flip OCR_CRAWL_HEADLESS=false for local, attended dev where seeing the browser
+    # helps. device_scale=2 is the OCR-readability lever (2x DPI at 100% zoom) — never lower it.
+    ocr_captures_dir: str = "./storage/ocr_captures"
+    ocr_crawl_headless: bool = True
+    ocr_device_scale: int = Field(default=2, ge=1, le=4)
+    ocr_nav_timeout_ms: int = Field(default=45000, gt=0)
+    tesseract_cmd: str | None = None
+    """Absolute path to the tesseract binary. None => rely on PATH (correct in the Docker image
+    where apt puts it on PATH; local Windows dev sets this to the UB-Mannheim install path)."""
+    ocr_concurrency: int = Field(default=3, ge=1, le=8)
+    """How many businesses' Stage B (Tesseract OCR) run concurrently. Distinct from the main
+    crawler's crawl_settings.concurrency (job-level, DB-configurable) — this is per-image OCR
+    parallelism within the ONE active OCR job (single-flight by design). Each Tesseract call
+    stays single-threaded internally (OMP_THREAD_LIMIT=1 in ocr_engine.py — multi-threading a
+    single image was measured 5.5x SLOWER), so running several calls concurrently is what
+    actually uses multiple CPU cores. Capture (Stage A, one Chromium page) already finished
+    before Stage B starts, so this doesn't compete with browser navigation for the CPU. Keep at
+    or below the container's core count minus 1 — oversubscribing degrades every call equally
+    rather than speeding the batch up."""
+
 
 def load_settings() -> Settings:
     return Settings()
