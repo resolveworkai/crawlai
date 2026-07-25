@@ -27,10 +27,13 @@ export const createOcrJobSchema = z
     // Optional center point + radius: when given, the worker enforces radiusKm as a hard
     // haversine filter on each business's OWN href-derived coordinates (see capture.py) — not
     // just a Maps-viewport bias. Both centerLat and centerLng must be provided together; radiusKm
-    // is meaningless without a center.
+    // is meaningless without a center. 300km ceiling matches capture.py's MAX_GRID_CELLS safety —
+    // above ~2km the search auto-tiles into a grid, and MAX_GRID_CELLS auto-widens each cell as
+    // radiusKm grows so job duration stays bounded even at this ceiling (trading some per-cell
+    // exhaustiveness for a predictable runtime on very large areas).
     centerLat: z.coerce.number().min(-90).max(90).optional(),
     centerLng: z.coerce.number().min(-180).max(180).optional(),
-    radiusKm: z.coerce.number().positive().max(100).optional(),
+    radiusKm: z.coerce.number().positive().max(300).optional(),
   })
   .refine((v) => (v.centerLat === undefined) === (v.centerLng === undefined), {
     message: "centerLat and centerLng must be provided together",

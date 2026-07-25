@@ -151,7 +151,12 @@ on this status for a deploy decision.
     walked sequentially within the same single Chromium session (never concurrent Maps
     automation). Cross-cell duplicates deduped by Google's own place id (href's `!1s{hex}:{hex}`,
     exact) with a fuzzy name+phone fallback pass. `ocr_businesses` gained `lat`/`lng`/
-    `distance_km` + `image_url` (hero photo, DOM-sourced).
+    `distance_km` + `image_url` (hero photo, DOM-sourced). `radiusKm` accepts up to 300km;
+    `generate_grid_cells`'s `MAX_GRID_CELLS = 60` auto-widens `cell_radius_km` at very large radii
+    so job duration stays bounded rather than spawning thousands of sequential sub-searches. The
+    center point comes from either "Use my location" (browser Geolocation) or pinning a typed
+    address via the existing `/geocode` Nominatim proxy (same one Discover already used) — both
+    write `centerLat`/`centerLng`.
   - **Queueing (2026-07-25)**: `POST /ocr-crawl/jobs` never 409s anymore — a new job queues
     (`queuePosition` in the response) and auto-runs the moment whatever's ahead finishes
     (`main.py`'s claim loop already re-checks immediately; only the DB constraint changed, from

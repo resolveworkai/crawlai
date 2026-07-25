@@ -15,8 +15,18 @@ import {
   useOcrJobs,
   useOcrResults,
 } from "@/hooks/useOcrCrawl";
+import { useGeocode } from "@/hooks/useGeocode";
 import { timeAgo } from "@/lib/utils";
-import { Camera, Download, Loader2, MapPin, Star, Trash2, AlertTriangle } from "lucide-react";
+import {
+  Camera,
+  Download,
+  Loader2,
+  MapPin,
+  Search,
+  Star,
+  Trash2,
+  AlertTriangle,
+} from "lucide-react";
 import { toast } from "sonner";
 import type { OcrBusiness, OcrJobStatus } from "@/types/api";
 import { useSettings } from "@/hooks/useSettings";
@@ -59,6 +69,7 @@ function OcrCrawl() {
   const [centerLng, setCenterLng] = useState<number | undefined>(undefined);
   const [radiusKm, setRadiusKm] = useState<number | undefined>(5);
   const [locating, setLocating] = useState(false);
+  const geocode = useGeocode();
 
   function useMyLocation() {
     if (!navigator.geolocation) {
@@ -82,6 +93,25 @@ function OcrCrawl() {
       },
       { enableHighAccuracy: true, timeout: 10_000 },
     );
+  }
+
+  // Manual pin: geocode whatever address the user typed into Location (Nominatim, same proxy the
+  // main crawler's Discover screen uses) — an alternative to "Use my location" for pinning a
+  // center point that isn't wherever the browser physically is.
+  function pinTypedAddress() {
+    if (location.trim() === "") {
+      toast.error("Type an address into Location first");
+      return;
+    }
+    geocode.mutate(location.trim(), {
+      onSuccess: ({ result }) => {
+        setCenterLat(result.lat);
+        setCenterLng(result.lng);
+        setLocation(result.displayName);
+        toast.success(`Pinned: ${result.displayName}`);
+      },
+      onError: (err) => toast.error(`Couldn't find that address: ${err.message}`),
+    });
   }
 
   const { data: settings } = useSettings();
@@ -165,8 +195,19 @@ function OcrCrawl() {
                 value={location}
                 onChange={(e) => setLocation(e.target.value)}
                 placeholder="Al Nahda, Dubai"
-                className="h-9 bg-input"
+                className="h-9 min-w-0 flex-1 bg-input"
               />
+              <Button
+                type="button"
+                variant="outline"
+                size="icon"
+                className="h-9 w-9 shrink-0 border-border"
+                disabled={geocode.isPending || location.trim() === ""}
+                onClick={pinTypedAddress}
+                title="Pin the typed address as the search center"
+              >
+                <Search className={`h-3.5 w-3.5 ${geocode.isPending ? "animate-pulse" : ""}`} />
+              </Button>
               <Button
                 type="button"
                 variant="outline"
@@ -199,14 +240,19 @@ function OcrCrawl() {
           <div>
             <label className="text-xs text-muted-foreground">
               Radius (km){" "}
-              {centerLat === undefined && (
+              {centerLat === undefined ? (
                 <span className="text-[10px]">(pin a location first)</span>
+              ) : (
+                radiusKm !== undefined &&
+                radiusKm > 20 && (
+                  <span className="text-[10px]">(large radii auto-tile, take longer)</span>
+                )
               )}
             </label>
             <Input
               type="number"
               min={0.1}
-              max={100}
+              max={300}
               step={0.5}
               value={radiusKm ?? ""}
               disabled={centerLat === undefined}
@@ -238,8 +284,9 @@ function OcrCrawl() {
           </div>
         </div>
         {centerLat !== undefined && centerLng !== undefined && (
-          <p className="mt-2 flex items-center gap-1 text-[11px] text-muted-foreground">
-            <MapPin className="h-3 w-3" /> Center: {centerLat.toFixed(5)}, {centerLng.toFixed(5)}
+          <p className="mt-2 flex flex-wrap items-center gap-1 text-[11px] text-muted-foreground">
+            <MapPin className="h-3 w-3 shrink-0" /> Center: {centerLat.toFixed(5)},{" "}
+            {centerLng.toFixed(5)}
             {radiusKm !== undefined && ` · ${radiusKm} km radius (exact — enforced per business)`}
             <button
               className="ml-1 text-primary hover:underline"
@@ -262,16 +309,16 @@ function OcrCrawl() {
 
       {focus && (
         <Card className="mt-4 border-border bg-card p-5">
-          <div className="flex items-center justify-between">
-            <div>
-              <div className="flex items-center gap-2">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div className="min-w-0">
+              <div className="flex flex-wrap items-center gap-2">
                 {ACTIVE.has(focus.status) && (
-                  <Loader2 className="h-3.5 w-3.5 animate-spin text-primary" />
+                  <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-primary" />
                 )}
                 <span className={`text-sm font-medium ${STATUS_COLOR[focus.status]}`}>
                   {focus.status.toUpperCase()}
                 </span>
-                <span className="text-xs text-muted-foreground">
+                <span className="truncate text-xs text-muted-foreground">
                   {focus.query} · {focus.location}
                 </span>
               </div>
@@ -299,7 +346,7 @@ function OcrCrawl() {
                 <p className="mt-1 text-xs text-destructive">{focus.error_message}</p>
               )}
             </div>
-            <div className="flex items-center gap-1.5">
+            <div className="flex shrink-0 items-center gap-1.5">
               {focus.status === "ready" && (
                 <>
                   <a href={ocrExportUrl(focus.id, "csv")} target="_blank" rel="noreferrer">
@@ -317,7 +364,7 @@ function OcrCrawl() {
               <Button
                 variant="ghost"
                 size="icon"
-                className="h-8 w-8 text-muted-foreground hover:text-destructive"
+                className="h-8 w-8 shrink-0 text-muted-foreground hover:text-destructive"
                 onClick={() => {
                   if (confirm("Delete this OCR job and its screenshots?")) {
                     deleteJob.mutate(focus.id, { onError: (e) => toast.error(e.message) });
@@ -399,15 +446,15 @@ function OcrCrawl() {
             <button
               key={j.id}
               onClick={() => setSelectedId(j.id)}
-              className={`flex w-full items-center justify-between px-4 py-2.5 text-left text-sm hover:bg-accent/30 ${
+              className={`flex w-full flex-col gap-1 px-4 py-2.5 text-left text-sm hover:bg-accent/30 sm:flex-row sm:items-center sm:justify-between sm:gap-3 ${
                 j.id === focusId ? "bg-accent/20" : ""
               }`}
             >
-              <span>
+              <span className="min-w-0 truncate">
                 <span className="font-medium">{j.query}</span>{" "}
                 <span className="text-muted-foreground">· {j.location}</span>
               </span>
-              <span className="flex items-center gap-3 text-xs">
+              <span className="flex shrink-0 items-center gap-3 text-xs">
                 <span className={STATUS_COLOR[j.status]}>{j.status}</span>
                 <span className="text-muted-foreground">{j.captured_count} rows</span>
                 <span className="font-mono text-[10px] text-muted-foreground">

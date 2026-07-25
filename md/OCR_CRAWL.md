@@ -69,6 +69,19 @@ final `_dedupe_by_name_phone()` pass is a safety net for the rare href without a
 id: exact phone match, or a close fuzzy name match within 250m (guards against merging two
 different branches of the same-named chain).
 
+**Radius ceiling & cell-count safety (`MAX_GRID_CELLS = 60`)**: `radiusKm` accepts up to 300km. A
+naive grid at the default 2km cell size would produce thousands of cells for a radius that large —
+impractical (hours of sequential navigation) and a real ToS/detection-risk multiplier (far more
+automated requests against Maps from one session). `generate_grid_cells()` auto-widens
+`cell_radius_km` in steps until the total cell count fits `MAX_GRID_CELLS`, trading some per-cell
+exhaustiveness for a bounded, predictable job duration at very large radii. The UI hints "large
+radii auto-tile, take longer" past 20km.
+
+**Setting the center point**: two ways, both write `centerLat`/`centerLng` — "Use my location"
+(browser Geolocation API) for wherever the operator physically is, or **pin a typed address**
+(the same Nominatim `/geocode` proxy the main crawler's Discover screen uses) via the search-icon
+button next to Location, for pinning anywhere regardless of where the browser is.
+
 ## Queueing — jobs stack, never rejected
 
 `POST /ocr-crawl/jobs` never 409s. A new job is created `queued` and `claim_pending_ocr_job()`

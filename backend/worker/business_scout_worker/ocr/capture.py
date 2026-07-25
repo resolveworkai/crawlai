@@ -220,6 +220,14 @@ def _offset_km(
     return lat + math.degrees(dlat), lng + math.degrees(dlng)
 
 
+MAX_GRID_CELLS = 60
+"""Hard cap on how many sub-searches one job will ever run, regardless of radius_km. Each cell is
+a full navigate+scroll+walk — unbounded cell count on a large radius would turn one job into
+hours of sequential Maps automation (both impractical and a real ToS/detection-risk multiplier).
+generate_grid_cells auto-widens cell_radius_km until the grid fits this cap, trading per-cell
+exhaustiveness for a bounded, predictable job duration on very large radii."""
+
+
 def generate_grid_cells(
     center_lat: float,
     center_lng: float,
@@ -227,13 +235,28 @@ def generate_grid_cells(
     cell_radius_km: float = DEFAULT_CELL_RADIUS_KM,
 ) -> list[tuple[float, float, float]]:
     """Covers a circle of `radius_km` around the center with a ring-based grid of overlapping
-    cells of `cell_radius_km` each — small enough that a single Maps search per cell is
-    realistically exhaustive. A single broad search over a big area silently drops results past
-    Google's own relevance/stagnation cap (the "won't fetch all the data" problem); a small area
-    has far fewer businesses competing for that same cap, so nothing gets crowded out. Returns
-    [(lat, lng, cell_radius_km), ...], center cell first. A radius at or below one cell returns
-    just that single center cell — the existing non-tiled behavior, unchanged."""
-    cell_radius_km = min(cell_radius_km, max(radius_km, 0.1))
+    cells — small enough that a single Maps search per cell is realistically exhaustive. A single
+    broad search over a big area silently drops results past Google's own relevance/stagnation
+    cap (the "won't fetch all the data" problem); a small area has far fewer businesses competing
+    for that same cap, so nothing gets crowded out. Returns [(lat, lng, cell_radius_km), ...],
+    center cell first. A radius at or below one cell returns just that single center cell — the
+    existing non-tiled behavior, unchanged. If the naive grid at `cell_radius_km` would exceed
+    MAX_GRID_CELLS (a very large radius_km), cell_radius_km is widened in steps until the count
+    fits — see MAX_GRID_CELLS."""
+    effective_cell_km = min(cell_radius_km, max(radius_km, 0.1))
+    for _ in range(20):  # bounded — each iteration widens the cell, so this always converges
+        cells = _grid_cells_at(center_lat, center_lng, radius_km, effective_cell_km)
+        if len(cells) <= MAX_GRID_CELLS or radius_km <= effective_cell_km:
+            return cells
+        effective_cell_km *= 1.4
+    return (
+        cells  # pragma: no cover - unreachable in practice (loop always converges well before 20)
+    )
+
+
+def _grid_cells_at(
+    center_lat: float, center_lng: float, radius_km: float, cell_radius_km: float
+) -> list[tuple[float, float, float]]:
     if radius_km <= cell_radius_km:
         return [(center_lat, center_lng, cell_radius_km)]
 

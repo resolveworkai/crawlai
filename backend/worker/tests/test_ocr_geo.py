@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from business_scout_worker.ocr.capture import (
     DEFAULT_CELL_RADIUS_KM,
+    MAX_GRID_CELLS,
     _dedupe_by_name_phone,
     _haversine_km,
     _outside_radius,
@@ -123,6 +124,16 @@ def test_grid_tiles_when_radius_exceeds_one_cell() -> None:
     for lat, lng, r in cells:
         assert r == 2.0
         assert _haversine_km(29.21, 79.52, lat, lng) <= 10.0 + 2.0 * 0.5 + 0.01
+
+
+def test_grid_widens_cells_to_stay_under_max_cell_count_for_huge_radius() -> None:
+    # A radius this large at the default 2km cell would naively produce thousands of cells —
+    # generate_grid_cells must widen the cell radius until the count fits MAX_GRID_CELLS.
+    cells = generate_grid_cells(29.21, 79.52, 300.0, cell_radius_km=DEFAULT_CELL_RADIUS_KM)
+    assert len(cells) <= MAX_GRID_CELLS
+    # Widening only happens for huge radii — the returned cell radius must have actually grown
+    # past the requested default to make that fit.
+    assert cells[0][2] > DEFAULT_CELL_RADIUS_KM
 
 
 def test_grid_covers_full_requested_radius() -> None:
