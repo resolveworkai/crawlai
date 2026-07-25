@@ -67,6 +67,9 @@ async def run_ocr_job(
             job_id=str(job.id),
             job_dir=job_dir,
             started_at=datetime.now(UTC).isoformat(),
+            center_lat=job.center_lat,
+            center_lng=job.center_lng,
+            radius_km=job.radius_km,
             on_progress=_on_progress,
             should_stop=(lambda: shutdown_event.is_set()) if shutdown_event is not None else None,
         )
@@ -110,6 +113,9 @@ async def run_ocr_job(
                         ocr_result,
                         expand_hours=job.expand_hours,
                         dom=item.dom,
+                        lat=item.lat,
+                        lng=item.lng,
+                        distance_km=item.distance_km,
                     )
                     await ocr_jobs.insert_ocr_business(pool, job.id, parsed)
                     results_by_index[item.index] = parsed.model_dump()

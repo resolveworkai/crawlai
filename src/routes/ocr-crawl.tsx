@@ -16,7 +16,7 @@ import {
   useOcrResults,
 } from "@/hooks/useOcrCrawl";
 import { timeAgo } from "@/lib/utils";
-import { Camera, Download, Loader2, Star, Trash2, AlertTriangle } from "lucide-react";
+import { Camera, Download, Loader2, MapPin, Star, Trash2, AlertTriangle } from "lucide-react";
 import { toast } from "sonner";
 import type { OcrBusiness, OcrJobStatus } from "@/types/api";
 import { useSettings } from "@/hooks/useSettings";
@@ -30,6 +30,9 @@ export const Route = createFileRoute("/ocr-crawl")({
 });
 
 const ACTIVE: ReadonlySet<OcrJobStatus> = new Set(["queued", "capturing", "ocr", "parsing"]);
+// Actually running a Chromium/Maps session — distinct from merely 'queued'. Only one job is ever
+// RUNNING at a time (server-enforced); any number may be 'queued' behind it and auto-run in turn.
+const RUNNING: ReadonlySet<OcrJobStatus> = new Set(["capturing", "ocr", "parsing"]);
 const STATUS_COLOR: Record<OcrJobStatus, string> = {
   queued: "text-muted-foreground",
   capturing: "text-primary",
@@ -40,7 +43,7 @@ const STATUS_COLOR: Record<OcrJobStatus, string> = {
   blocked: "text-warning",
 };
 
-type SortKey = "idx" | "rating" | "review_count";
+type SortKey = "idx" | "rating" | "review_count" | "distance_km";
 
 function OcrCrawl() {
   const [query, setQuery] = useState("");
@@ -49,13 +52,45 @@ function OcrCrawl() {
   const [expandHours, setExpandHours] = useState(false);
   const [selectedId, setSelectedId] = useState<string | undefined>(undefined);
   const [sortKey, setSortKey] = useState<SortKey>("idx");
+  // Center point (from "Use my location" or manual entry) + a real km radius. When set, the
+  // worker enforces radiusKm as an exact haversine filter on each business's own coordinates —
+  // not just a Maps search bias — so businesses outside it are never captured at all.
+  const [centerLat, setCenterLat] = useState<number | undefined>(undefined);
+  const [centerLng, setCenterLng] = useState<number | undefined>(undefined);
+  const [radiusKm, setRadiusKm] = useState<number | undefined>(5);
+  const [locating, setLocating] = useState(false);
+
+  function useMyLocation() {
+    if (!navigator.geolocation) {
+      toast.error("Geolocation isn't available in this browser");
+      return;
+    }
+    setLocating(true);
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        setCenterLat(pos.coords.latitude);
+        setCenterLng(pos.coords.longitude);
+        if (location.trim() === "") {
+          setLocation(`${pos.coords.latitude.toFixed(4)}, ${pos.coords.longitude.toFixed(4)}`);
+        }
+        setLocating(false);
+        toast.success("Current location captured");
+      },
+      (err) => {
+        setLocating(false);
+        toast.error(`Couldn't get your location: ${err.message}`);
+      },
+      { enableHighAccuracy: true, timeout: 10_000 },
+    );
+  }
 
   const { data: settings } = useSettings();
   const ocrMaxResults = settings?.ocr_max_results ?? 1000;
 
   const { data: jobs = [] } = useOcrJobs();
-  const activeJob = jobs.find((j) => ACTIVE.has(j.status));
-  const focusId = selectedId ?? activeJob?.id ?? jobs[0]?.id;
+  const runningJob = jobs.find((j) => RUNNING.has(j.status));
+  const queuedCount = jobs.filter((j) => j.status === "queued").length;
+  const focusId = selectedId ?? runningJob?.id ?? jobs[0]?.id;
   const { data: detail } = useOcrJob(focusId);
   const focus = detail?.job;
   const { data: results = [] } = useOcrResults(focusId, focus?.status === "ready");
@@ -67,6 +102,8 @@ function OcrCrawl() {
     const rows = [...results];
     rows.sort((a, b) => {
       if (sortKey === "idx") return a.idx - b.idx;
+      if (sortKey === "distance_km")
+        return (a.distance_km ?? Infinity) - (b.distance_km ?? Infinity);
       return (Number(b[sortKey]) || 0) - (Number(a[sortKey]) || 0);
     });
     return rows;
@@ -77,11 +114,27 @@ function OcrCrawl() {
       toast.error("Enter a business type and a location");
       return;
     }
+    if (radiusKm !== undefined && (centerLat === undefined || centerLng === undefined)) {
+      toast.error("Set a center point (Use my location) before applying a radius");
+      return;
+    }
     createJob.mutate(
-      { query: query.trim(), location: location.trim(), maxResults, expandHours },
       {
-        onSuccess: (job) => {
-          toast.success(`OCR crawl launched for "${query}"`);
+        query: query.trim(),
+        location: location.trim(),
+        maxResults,
+        expandHours,
+        ...(centerLat !== undefined && centerLng !== undefined
+          ? { centerLat, centerLng, ...(radiusKm !== undefined ? { radiusKm } : {}) }
+          : {}),
+      },
+      {
+        onSuccess: ({ job, queuePosition }) => {
+          toast.success(
+            queuePosition > 0
+              ? `Queued behind ${queuePosition} job${queuePosition > 1 ? "s" : ""} — will auto-run`
+              : `OCR crawl launched for "${query}"`,
+          );
           setSelectedId(job.id);
         },
         onError: (err) => toast.error(err.message),
@@ -107,12 +160,25 @@ function OcrCrawl() {
           </div>
           <div>
             <label className="text-xs text-muted-foreground">Location</label>
-            <Input
-              value={location}
-              onChange={(e) => setLocation(e.target.value)}
-              placeholder="Al Nahda, Dubai"
-              className="mt-1 h-9 bg-input"
-            />
+            <div className="mt-1 flex gap-1.5">
+              <Input
+                value={location}
+                onChange={(e) => setLocation(e.target.value)}
+                placeholder="Al Nahda, Dubai"
+                className="h-9 bg-input"
+              />
+              <Button
+                type="button"
+                variant="outline"
+                size="icon"
+                className="h-9 w-9 shrink-0 border-border"
+                disabled={locating}
+                onClick={useMyLocation}
+                title="Use my current location as the search center"
+              >
+                <MapPin className={`h-3.5 w-3.5 ${locating ? "animate-pulse" : ""}`} />
+              </Button>
+            </div>
           </div>
           <div>
             <label className="text-xs text-muted-foreground">
@@ -130,6 +196,28 @@ function OcrCrawl() {
               className="mt-1 h-9 bg-input"
             />
           </div>
+          <div>
+            <label className="text-xs text-muted-foreground">
+              Radius (km){" "}
+              {centerLat === undefined && (
+                <span className="text-[10px]">(pin a location first)</span>
+              )}
+            </label>
+            <Input
+              type="number"
+              min={0.1}
+              max={100}
+              step={0.5}
+              value={radiusKm ?? ""}
+              disabled={centerLat === undefined}
+              onChange={(e) => {
+                const v = Number(e.target.value);
+                setRadiusKm(e.target.value === "" || Number.isNaN(v) ? undefined : v);
+              }}
+              placeholder="No limit"
+              className="mt-1 h-9 bg-input"
+            />
+          </div>
           <div className="flex items-end gap-3">
             <label className="flex items-center gap-2 text-xs text-muted-foreground">
               <input
@@ -141,17 +229,33 @@ function OcrCrawl() {
             </label>
             <Button
               className="ml-auto gap-1.5"
-              disabled={createJob.isPending || activeJob !== undefined}
+              disabled={createJob.isPending}
               onClick={handleLaunch}
             >
               <Camera className="h-3.5 w-3.5" />
-              {activeJob ? "Job running…" : "Launch"}
+              Launch
             </Button>
           </div>
         </div>
-        {activeJob && (
+        {centerLat !== undefined && centerLng !== undefined && (
+          <p className="mt-2 flex items-center gap-1 text-[11px] text-muted-foreground">
+            <MapPin className="h-3 w-3" /> Center: {centerLat.toFixed(5)}, {centerLng.toFixed(5)}
+            {radiusKm !== undefined && ` · ${radiusKm} km radius (exact — enforced per business)`}
+            <button
+              className="ml-1 text-primary hover:underline"
+              onClick={() => {
+                setCenterLat(undefined);
+                setCenterLng(undefined);
+              }}
+            >
+              clear
+            </button>
+          </p>
+        )}
+        {runningJob && (
           <p className="mt-2 text-[11px] text-muted-foreground">
-            A job is already running — only one runs at a time.
+            A job is running now{queuedCount > 0 && ` (${queuedCount} more queued behind it)`} — new
+            jobs queue and auto-run in order, no need to wait.
           </p>
         )}
       </Card>
@@ -245,18 +349,34 @@ function OcrCrawl() {
                     <th className="px-2 py-2 text-left font-medium">Phone</th>
                     <th className="px-2 py-2 text-left font-medium">Website</th>
                     <th className="px-2 py-2 text-left font-medium">Address</th>
+                    {focus.center_lat !== null && (
+                      <SortHeader
+                        label="Distance"
+                        col="distance_km"
+                        sortKey={sortKey}
+                        onSort={setSortKey}
+                      />
+                    )}
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-border">
                   {sorted.length === 0 && (
                     <tr>
-                      <td colSpan={9} className="px-2 py-8 text-center text-muted-foreground">
+                      <td
+                        colSpan={focus.center_lat !== null ? 10 : 9}
+                        className="px-2 py-8 text-center text-muted-foreground"
+                      >
                         No rows parsed.
                       </td>
                     </tr>
                   )}
                   {sorted.map((b) => (
-                    <ResultRow key={b.id} b={b} jobId={focus.id} />
+                    <ResultRow
+                      key={b.id}
+                      b={b}
+                      jobId={focus.id}
+                      showDistance={focus.center_lat !== null}
+                    />
                   ))}
                 </tbody>
               </table>
@@ -325,7 +445,15 @@ function SortHeader({
   );
 }
 
-function ResultRow({ b, jobId }: { b: OcrBusiness; jobId: string }) {
+function ResultRow({
+  b,
+  jobId,
+  showDistance,
+}: {
+  b: OcrBusiness;
+  jobId: string;
+  showDistance: boolean;
+}) {
   return (
     <tr className={b.needs_review ? "bg-warning/5" : "hover:bg-accent/20"}>
       <td className="px-2 py-2">
@@ -393,6 +521,11 @@ function ResultRow({ b, jobId }: { b: OcrBusiness; jobId: string }) {
         )}
       </td>
       <td className="px-2 py-2 text-xs text-muted-foreground">{b.address ?? "—"}</td>
+      {showDistance && (
+        <td className="px-2 py-2 text-xs">
+          {b.distance_km !== null ? `${b.distance_km.toFixed(2)} km` : "—"}
+        </td>
+      )}
     </tr>
   );
 }

@@ -98,13 +98,14 @@ async def insert_ocr_business(pool: AsyncConnectionPool, job_id: UUID, biz: Pars
             """
             INSERT INTO ocr_businesses (
                 job_id, idx, name, maps_url, rating, review_count, category, address, phone,
-                website, plus_code, hours_summary, hours_weekly, email, image_url, ocr_confidence,
-                needs_review, raw_text, source_images
+                website, plus_code, hours_summary, hours_weekly, email, image_url, lat, lng,
+                distance_km, ocr_confidence, needs_review, raw_text, source_images
             ) VALUES (
                 %(job_id)s, %(idx)s, %(name)s, %(maps_url)s, %(rating)s, %(review_count)s,
                 %(category)s, %(address)s, %(phone)s, %(website)s, %(plus_code)s,
-                %(hours_summary)s, %(hours_weekly)s, %(email)s, %(image_url)s, %(ocr_confidence)s,
-                %(needs_review)s, %(raw_text)s, %(source_images)s
+                %(hours_summary)s, %(hours_weekly)s, %(email)s, %(image_url)s, %(lat)s, %(lng)s,
+                %(distance_km)s, %(ocr_confidence)s, %(needs_review)s, %(raw_text)s,
+                %(source_images)s
             )
             ON CONFLICT (job_id, idx) DO UPDATE SET
                 name = EXCLUDED.name, maps_url = EXCLUDED.maps_url, rating = EXCLUDED.rating,
@@ -112,7 +113,8 @@ async def insert_ocr_business(pool: AsyncConnectionPool, job_id: UUID, biz: Pars
                 address = EXCLUDED.address, phone = EXCLUDED.phone, website = EXCLUDED.website,
                 plus_code = EXCLUDED.plus_code, hours_summary = EXCLUDED.hours_summary,
                 hours_weekly = EXCLUDED.hours_weekly, email = EXCLUDED.email,
-                image_url = EXCLUDED.image_url,
+                image_url = EXCLUDED.image_url, lat = EXCLUDED.lat, lng = EXCLUDED.lng,
+                distance_km = EXCLUDED.distance_km,
                 ocr_confidence = EXCLUDED.ocr_confidence, needs_review = EXCLUDED.needs_review,
                 raw_text = EXCLUDED.raw_text, source_images = EXCLUDED.source_images
             """,
@@ -132,6 +134,9 @@ async def insert_ocr_business(pool: AsyncConnectionPool, job_id: UUID, biz: Pars
                 "hours_weekly": Jsonb(biz.hours_weekly) if biz.hours_weekly else None,
                 "email": biz.email,
                 "image_url": biz.image_url,
+                "lat": biz.lat,
+                "lng": biz.lng,
+                "distance_km": biz.distance_km,
                 "ocr_confidence": biz.ocr_confidence,
                 "needs_review": biz.needs_review,
                 "raw_text": biz.raw_text,

@@ -16,6 +16,9 @@ interface CreateOcrJobInput {
   maxResults: number;
   expandHours: boolean;
   langs?: string;
+  centerLat?: number;
+  centerLng?: number;
+  radiusKm?: number;
 }
 
 const ACTIVE: ReadonlySet<string> = new Set(["queued", "capturing", "ocr", "parsing"]);
@@ -57,8 +60,8 @@ export function useOcrResults(id: string | undefined, enabled: boolean) {
 export function useCreateOcrJob() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async (input: CreateOcrJobInput) =>
-      (await api.post<{ job: OcrJob }>("/ocr-crawl/jobs", input)).job,
+    mutationFn: (input: CreateOcrJobInput) =>
+      api.post<{ job: OcrJob; queuePosition: number }>("/ocr-crawl/jobs", input),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ocrKeys.list() });
     },

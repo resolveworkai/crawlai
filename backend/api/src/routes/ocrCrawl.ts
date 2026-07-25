@@ -1,8 +1,14 @@
 /** Authored by: Mohit Singh */
 //
 // Crawl-OCR API surface (§6). Node owns creation + reads; the Python worker (ocr/pipeline.py)
-// does the capture+OCR. Single-flight lock: reject a second job while one is active (the DB's
-// partial unique index is the hard guarantee behind this friendly 409). requireAuth per-route.
+// does the capture+OCR. requireAuth per-route.
+//
+// Queueing: a new job is never rejected — it's created 'queued' and the worker's
+// claim_pending_ocr_job() (oldest-created first, FOR UPDATE SKIP LOCKED) auto-runs it once
+// whatever's ahead finishes. Only ACTUALLY RUNNING work (capturing/ocr/parsing — an open
+// Chromium session against Maps) is still capped at one at a time (DB partial unique index
+// ux_ocr_jobs_single_running is the hard guarantee) — deliberately sequential, never concurrent
+// Maps automation, to avoid compounding detection/ToS risk.
 import { Router } from "express";
 import path from "node:path";
 import { rm } from "node:fs/promises";
@@ -15,10 +21,10 @@ import {
   type CreateOcrJobInput,
 } from "../schemas/ocrCrawl.js";
 import {
+  countQueuedOcrJobs,
   createOcrJob,
   deleteOcrJob,
   findOcrJobById,
-  hasActiveOcrJob,
   listOcrJobs,
   notifyOcrJobs,
 } from "../db/ocrJobs.js";
@@ -26,7 +32,7 @@ import { listOcrBusinesses } from "../db/ocrBusinesses.js";
 import { getCrawlSettings } from "../db/crawlSettings.js";
 import { buildOcrExport } from "../services/ocrExportService.js";
 import { config } from "../config.js";
-import { ConflictError, NotFoundError, ValidationError } from "../errors.js";
+import { NotFoundError, ValidationError } from "../errors.js";
 
 export const ocrCrawlRouter = Router();
 
@@ -36,9 +42,6 @@ ocrCrawlRouter.post(
   requireRole("operator"),
   validate(createOcrJobSchema),
   async (req, res) => {
-    if (await hasActiveOcrJob()) {
-      throw new ConflictError("An OCR crawl job is already running — only one runs at a time");
-    }
     const input = req.body as CreateOcrJobInput;
     const { ocr_max_results: ocrMaxResults } = await getCrawlSettings();
     if (input.maxResults > ocrMaxResults) {
@@ -46,6 +49,8 @@ ocrCrawlRouter.post(
         `maxResults exceeds the configured limit (${ocrMaxResults}) — raise "OCR max results" in Settings`,
       );
     }
+    // Position BEFORE this job's own insert — how many are already queued ahead of it.
+    const queuedAhead = await countQueuedOcrJobs();
     const job = await createOcrJob({
       createdBy: req.user!.id,
       query: input.query,
@@ -53,9 +58,12 @@ ocrCrawlRouter.post(
       maxResults: input.maxResults,
       expandHours: input.expandHours,
       langs: input.langs,
+      centerLat: input.centerLat,
+      centerLng: input.centerLng,
+      radiusKm: input.radiusKm,
     });
     await notifyOcrJobs(job.id);
-    res.status(201).json({ job });
+    res.status(201).json({ job, queuePosition: queuedAhead });
   },
 );
 

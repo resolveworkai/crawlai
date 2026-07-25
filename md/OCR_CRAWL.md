@@ -45,19 +45,57 @@ navigates to each business in turn. Verified end-to-end: 15/15 Al Nahda, Dubai g
    phone, website, address, category, and hero-image are all still 100% reliable via the DOM;
    review count is the one field this pipeline cannot promise.
 
+## Radius search, grid tiling, and exhaustive coverage
+
+Given a center point (`centerLat`/`centerLng` — the UI's "Use my location" button, or manual
+entry) + `radiusKm`, the job is **radius-bounded, exactly**: every captured business's own
+coordinates (parsed from its place href's `!3d{lat}!4d{lng}` segment — Google's own value, not an
+estimate) are haversine-checked against the true center, and anything beyond `radiusKm` is skipped
+before it's ever captured. This is a hard filter, not a soft Maps-viewport bias.
+
+**Why a single search can still miss businesses, and how tiling fixes it:** Google Maps' consumer
+search is relevance-ranked and soft-capped (`STAGNATION_ROUNDS` gives up after repeated stagnant
+scrolls) — a broad search over a big area silently stops loading results well before every real
+business has surfaced. `generate_grid_cells()` (`capture.py`) covers a large `radiusKm` with a
+ring-based grid of smaller, overlapping `cell_radius_km` (default 2km) sub-searches — small enough
+that each one *is* realistically exhaustive — walked **sequentially, within the same single
+Chromium session** (never concurrent Maps automation; see Compliance below). A radius that fits in
+one cell (≤2km by default) runs exactly one search, unchanged from the original behavior.
+
+**Cross-cell dedup**: the same business legitimately appears in more than one overlapping cell.
+The primary key is Google's own stable place id (the href's `!1s{hex}:{hex}` segment) — exact, so
+`seen` recognizes and skips it as soon as it resurfaces in a later cell, without re-capturing. A
+final `_dedupe_by_name_phone()` pass is a safety net for the rare href without a parseable place
+id: exact phone match, or a close fuzzy name match within 250m (guards against merging two
+different branches of the same-named chain).
+
+## Queueing — jobs stack, never rejected
+
+`POST /ocr-crawl/jobs` never 409s. A new job is created `queued` and `claim_pending_ocr_job()`
+(oldest `created_at` first, `FOR UPDATE SKIP LOCKED`) auto-runs it the moment whatever's ahead
+finishes — `main.py`'s worker loop already `continue`s straight into the next claim after a job
+completes, so this needed no worker changes, only relaxing the DB constraint (migration
+`1784500000000`): only **actively running** work (`capturing`/`ocr`/`parsing` — an open Chromium
+session) is still capped at one at a time (`ux_ocr_jobs_single_running`); any number of jobs may
+sit `queued` simultaneously. The create response includes `queuePosition` (jobs already queued
+ahead) so the UI can say "queued behind N" instead of silently accepting into a void.
+
 ## ⚠️ Compliance
 
 Automating Google Maps with a browser **violates Google's Terms of Service**. Practical risk is
-temporary CAPTCHAs/blocks, not more, but this is built for **low-volume, internal use**: one job at
-a time (DB-enforced single-flight lock), human-paced input, hard result caps, and a "detect the
-wall → stop cleanly, never solve it" policy. For production/commercial scale, the compliant path
-for the same fields (minus email) is the **Google Places API** — no OCR, no detection risk.
+temporary CAPTCHAs/blocks, not more, but this is built for **low-volume, internal use**: only one
+job **actively runs** at a time — multiple regions queue and auto-run sequentially, deliberately
+never concurrently, so there is never more than one automated Maps session open regardless of how
+many jobs (or grid cells within one job) are pending — human-paced input, hard result caps, and a
+"detect the wall → stop cleanly, never solve it" policy. For production/commercial scale, the
+compliant path for the same fields (minus email) is the **Google Places API** — no OCR, no
+detection risk.
 
 ## Architecture & files
 
 | Layer | Files |
 |---|---|
-| Schema | `db/migrations/*ocr-crawl.sql` — `ocr_jobs` (+ single-active partial-unique index) + `ocr_businesses` |
+| Schema | `db/migrations/*ocr-crawl.sql` + follow-ups — `ocr_jobs` (center/radius, single-**running** partial-unique index) + `ocr_businesses` (lat/lng/distance_km, image_url) |
 | Node API | `routes/ocrCrawl.ts`, `db/ocrJobs.ts` + `db/ocrBusinesses.ts`, `services/ocrExportService.ts`, `lib/ocrRetention.ts`, `schemas/ocrCrawl.ts` |
 | Worker (Stage A capture) | `business_scout_worker/ocr/capture.py` (+ `selectors.py`, `humanize.py`) |
 | Worker (Stage B OCR+parse) | `ocr/preprocess.py`, `ocr/ocr_engine.py`, `ocr/parse_fields.py` |
@@ -77,7 +115,7 @@ records an `end_reason` (`end_of_list` | `max_results` | `stagnation` | `blocked
 
 | Route | Behavior |
 |---|---|
-| `POST /api/ocr-crawl/jobs` | `{query, location, maxResults, expandHours, langs}` → job (409 if one is already running) |
+| `POST /api/ocr-crawl/jobs` | `{query, location, maxResults, expandHours, langs, centerLat?, centerLng?, radiusKm?}` → `{job, queuePosition}` — never rejected, queues behind any job already running |
 | `GET /api/ocr-crawl/jobs` | list |
 | `GET /api/ocr-crawl/jobs/:id` | status + `{progress:{total,captured,ocrDone}}` (poll every 2 s) |
 | `GET /api/ocr-crawl/jobs/:id/results` | parsed rows |

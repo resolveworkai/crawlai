@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import re
 from collections.abc import Awaitable, Callable
 from pathlib import Path
@@ -27,6 +28,7 @@ from playwright.async_api import (
     ViewportSize,
     async_playwright,
 )
+from rapidfuzz import fuzz
 
 from business_scout_worker.logging_config import get_logger
 from business_scout_worker.ocr import humanize, selectors
@@ -77,10 +79,56 @@ def _slug(name: str) -> str:
     return s[:40] or "business"
 
 
-def _search_url(query: str, location: str) -> str:
+def _search_url(
+    query: str,
+    location: str,
+    center_lat: float | None = None,
+    center_lng: float | None = None,
+    radius_km: float | None = None,
+) -> str:
     # Always an explicit location string, never "near me" (a server has no GPS — see §A2).
     term = quote(f"{query} near {location}")
-    return f"https://www.google.com/maps/search/{term}?hl=en"
+    url = f"https://www.google.com/maps/search/{term}"
+    if center_lat is not None and center_lng is not None:
+        # Biases Maps' own ranking toward this point at a zoom approximating the requested
+        # radius — a soft nudge, not a guarantee (Maps has no public "radius" search param).
+        # The actual radius guarantee is the haversine filter in the walk loop below, which
+        # drops any business whose own (exact, href-derived) coordinates land outside radius_km.
+        zoom = _zoom_for_radius_km(radius_km, center_lat) if radius_km else 14
+        url += f"/@{center_lat},{center_lng},{zoom}z"
+    return f"{url}?hl=en"
+
+
+_LATLNG_HREF_RE = re.compile(r"!3d(-?\d+\.\d+)!4d(-?\d+\.\d+)")
+
+
+def _parse_latlng(href: str) -> tuple[float, float] | None:
+    """Extracts a business's own coordinates from its place href's `!3d{lat}!4d{lng}` segment —
+    Google's own value for that exact business, not an estimate or a viewport center."""
+    m = _LATLNG_HREF_RE.search(href)
+    if not m:
+        return None
+    return float(m.group(1)), float(m.group(2))
+
+
+def _haversine_km(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
+    r = 6371.0088  # mean Earth radius, km
+    p1, p2 = math.radians(lat1), math.radians(lat2)
+    dp = math.radians(lat2 - lat1)
+    dl = math.radians(lng2 - lng1)
+    a = math.sin(dp / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
+    return 2 * r * math.asin(math.sqrt(a))
+
+
+def _zoom_for_radius_km(radius_km: float, lat_deg: float) -> int:
+    """Approximates the Maps zoom level whose visible width matches ~2x the requested radius,
+    using the standard Web Mercator meters-per-pixel formula. Purely a search-ranking bias (see
+    _search_url) — never the actual radius enforcement, which is the exact haversine filter."""
+    lat_rad = math.radians(lat_deg)
+    meters_per_pixel_at_z0 = 156543.03392 * math.cos(lat_rad)
+    desired_width_m = max(radius_km, 0.1) * 1000 * 2
+    zoom = math.log2((VIEWPORT["width"] * meters_per_pixel_at_z0) / desired_width_m)
+    return max(3, min(20, round(zoom)))
 
 
 async def _is_blocked_fast(page: Page) -> bool:
@@ -124,6 +172,124 @@ async def _collect_anchors(page: Page) -> list[tuple[str, str]]:
         if href and name and "/maps/place/" in href:
             out.append((href, name.strip()))
     return out
+
+
+def _outside_radius(
+    href: str, center_lat: float | None, center_lng: float | None, radius_km: float | None
+) -> tuple[bool, float | None, float | None, float | None]:
+    """Returns (is_outside, lat, lng, distance_km). When no center/radius was requested, every
+    item passes (is_outside=False) and lat/lng/distance are still returned if parseable, since
+    they're worth persisting either way. A business whose href carries no coordinates (rare) is
+    never excluded by radius — there's nothing to check it against."""
+    latlng = _parse_latlng(href)
+    if latlng is None:
+        return False, None, None, None
+    lat, lng = latlng
+    if center_lat is None or center_lng is None or radius_km is None:
+        return False, lat, lng, None
+    distance = _haversine_km(center_lat, center_lng, lat, lng)
+    return distance > radius_km, lat, lng, distance
+
+
+_PLACE_ID_RE = re.compile(r"!1s(0x[0-9a-fA-F]+:0x[0-9a-fA-F]+)")
+
+
+def _place_id_from_href(href: str) -> str | None:
+    """Google's own stable identifier for this exact place (the `!1s{hex}:{hex}` segment).
+    Primary cross-cell dedup key when a large radius is tiled into overlapping sub-searches (see
+    generate_grid_cells): the same business legitimately appears in more than one adjacent
+    cell's results, and this ID — unlike the href's tracking params — is identical every time."""
+    m = _PLACE_ID_RE.search(href)
+    return m.group(1) if m else None
+
+
+_EARTH_RADIUS_KM = 6371.0088
+DEFAULT_CELL_RADIUS_KM = 2.0
+FUZZY_NAME_SIMILARITY_THRESHOLD = 90.0
+FUZZY_MATCH_RADIUS_KM = 0.25
+
+
+def _offset_km(
+    lat: float, lng: float, distance_km: float, bearing_rad: float
+) -> tuple[float, float]:
+    """Forward-geodesic point at `distance_km` from (lat, lng) along `bearing_rad` — a flat-
+    earth approximation, accurate enough at the few-to-tens-of-km scale grid tiling operates at."""
+    lat_rad = math.radians(lat)
+    dlat = (distance_km / _EARTH_RADIUS_KM) * math.cos(bearing_rad)
+    dlng = (distance_km / (_EARTH_RADIUS_KM * max(math.cos(lat_rad), 0.01))) * math.sin(bearing_rad)
+    return lat + math.degrees(dlat), lng + math.degrees(dlng)
+
+
+def generate_grid_cells(
+    center_lat: float,
+    center_lng: float,
+    radius_km: float,
+    cell_radius_km: float = DEFAULT_CELL_RADIUS_KM,
+) -> list[tuple[float, float, float]]:
+    """Covers a circle of `radius_km` around the center with a ring-based grid of overlapping
+    cells of `cell_radius_km` each — small enough that a single Maps search per cell is
+    realistically exhaustive. A single broad search over a big area silently drops results past
+    Google's own relevance/stagnation cap (the "won't fetch all the data" problem); a small area
+    has far fewer businesses competing for that same cap, so nothing gets crowded out. Returns
+    [(lat, lng, cell_radius_km), ...], center cell first. A radius at or below one cell returns
+    just that single center cell — the existing non-tiled behavior, unchanged."""
+    cell_radius_km = min(cell_radius_km, max(radius_km, 0.1))
+    if radius_km <= cell_radius_km:
+        return [(center_lat, center_lng, cell_radius_km)]
+
+    step_km = cell_radius_km * 1.5  # < 2*cell_radius_km guarantees adjacent cells overlap
+    cells: list[tuple[float, float, float]] = [(center_lat, center_lng, cell_radius_km)]
+    ring = 1
+    while (ring - 1) * step_km < radius_km:
+        ring_dist = ring * step_km
+        n_points = max(6, round(2 * math.pi * ring))
+        for i in range(n_points):
+            angle = 2 * math.pi * i / n_points
+            lat, lng = _offset_km(center_lat, center_lng, ring_dist, angle)
+            if _haversine_km(center_lat, center_lng, lat, lng) <= radius_km + cell_radius_km * 0.5:
+                cells.append((lat, lng, cell_radius_km))
+        ring += 1
+    return cells
+
+
+def _dedupe_by_name_phone(items: list[CapturedItem]) -> list[CapturedItem]:
+    """Safety-net dedup for grid-tiled jobs: the place-id key in run()'s `seen` dict already
+    catches the common cross-cell duplicate case, this catches the rare miss (an href without a
+    parseable place id). Two items are duplicates when their phone numbers match exactly, or
+    their names are a close fuzzy match AND they're geographically near each other (the geo
+    check guards against merging two different branches of the same-named chain)."""
+    kept: list[CapturedItem] = []
+    for item in items:
+        is_dup = False
+        for existing in kept:
+            if (
+                item.dom.phone is not None
+                and existing.dom.phone is not None
+                and item.dom.phone == existing.dom.phone
+            ):
+                is_dup = True
+                break
+            if fuzz.token_sort_ratio(item.name, existing.name) >= FUZZY_NAME_SIMILARITY_THRESHOLD:
+                item_lat, item_lng = item.lat, item.lng
+                existing_lat, existing_lng = existing.lat, existing.lng
+                if (
+                    item_lat is not None
+                    and item_lng is not None
+                    and existing_lat is not None
+                    and existing_lng is not None
+                ):
+                    if _haversine_km(item_lat, item_lng, existing_lat, existing_lng) <= (
+                        FUZZY_MATCH_RADIUS_KM
+                    ):
+                        is_dup = True
+                        break
+                else:
+                    # No coords to sanity-check distance — trust the strong name match alone.
+                    is_dup = True
+                    break
+        if not is_dup:
+            kept.append(item)
+    return kept
 
 
 async def _place_panel(page: Page, expected_name: str) -> ElementHandle | None:
@@ -313,6 +479,10 @@ class CaptureEngine:
         job_id: str,
         job_dir: Path,
         started_at: str,
+        center_lat: float | None = None,
+        center_lng: float | None = None,
+        radius_km: float | None = None,
+        cell_radius_km: float = DEFAULT_CELL_RADIUS_KM,
         on_progress: ProgressCallback | None = None,
         should_stop: object = None,
     ) -> CaptureManifest:
@@ -322,7 +492,21 @@ class CaptureEngine:
         profile_dir.mkdir(parents=True, exist_ok=True)
 
         items: list[CapturedItem] = []
+        seen: dict[str, str] = {}
         end_reason: OcrEndReason = "end_of_list"
+
+        # A radius large enough to need more than one cell is tiled into overlapping
+        # sub-searches (generate_grid_cells) so nothing gets crowded out of a single broad
+        # search's relevance/stagnation cap. No radius, or a radius that fits in one cell, walks
+        # exactly one area — identical to the original single-search behavior.
+        cells: list[tuple[float | None, float | None, float | None]]
+        if center_lat is not None and center_lng is not None and radius_km is not None:
+            cells = list(generate_grid_cells(center_lat, center_lng, radius_km, cell_radius_km))
+        else:
+            cells = [(center_lat, center_lng, radius_km)]
+        tiled = len(cells) > 1
+        if tiled:
+            logger.info("radius tiled into cells", cell_count=len(cells), radius_km=radius_km)
 
         async with async_playwright() as p:
             context: BrowserContext = await p.chromium.launch_persistent_context(
@@ -342,91 +526,50 @@ class CaptureEngine:
             detail_page = await context.new_page()
             detail_page.set_default_timeout(self._settings.ocr_nav_timeout_ms)
             try:
-                await page.goto(_search_url(query, location), wait_until="domcontentloaded")
-                await _dismiss_consent(page)
-                if await _is_blocked(page):
-                    await page.screenshot(path=str(job_dir / "debug_blocked.png"))
-                    raise CaptureBlockedError("blocked at navigation")
-
-                await page.wait_for_selector(
-                    selectors.RESULTS_FEED, timeout=self._settings.ocr_nav_timeout_ms
-                )
-
-                seen: dict[str, str] = {}
-                stagnation = 0
-                while len(items) < max_results:
-                    anchors = await _collect_anchors(page)
-                    new = [(h, n) for (h, n) in anchors if h not in seen]
-
-                    if not new:
-                        # Nothing new in view — try to load more, or stop.
-                        feed = await page.query_selector(selectors.RESULTS_FEED)
-                        feed_text = (await feed.inner_text()) if feed else ""
-                        if selectors.END_OF_LIST_TEXT in feed_text:
-                            end_reason = "end_of_list"
-                            break
-                        stagnation += 1
-                        if stagnation >= STAGNATION_ROUNDS:
-                            end_reason = "stagnation"
-                            break
-                        # Scroll the feed to lazy-load the next batch.
-                        box = await feed.bounding_box() if feed else None
-                        fx = (box["x"] + box["width"] / 2) if box else VIEWPORT["width"] * 0.2
-                        fy = (box["y"] + box["height"] / 2) if box else VIEWPORT["height"] * 0.5
-                        for _ in range(3):
-                            await humanize.wheel_over(page, fx, fy, 900)
-                            await humanize.dwell(180, 300)
-                        await humanize.dwell(400, 650)
-                        continue
-
-                    stagnation = 0
-                    for href, name in new:
-                        if callable(should_stop) and should_stop():
-                            raise CaptureInterruptedError
-                        if len(items) >= max_results:
-                            end_reason = "max_results"
-                            break
-                        seen[href] = name
-                        # Denominator is the TARGET (max_results), not the number of anchors
-                        # discovered so far — Google lazy-loads ~7 cards at a time, so len(seen)
-                        # would race ahead of what's actually being processed and looked like the
-                        # tool "computes the total first". The pipeline corrects total to the real
-                        # captured count once capture finishes (e.g. if the list ends early).
-                        # Report BEFORE the (slow) capture so the UI names the business actually
-                        # being worked on right now, not the previous one.
-                        if on_progress is not None:
-                            await on_progress(len(items), max_results, name)
-                        # Hard per-business ceiling: a listing whose panel never settles (dead
-                        # click, endless spinner, DOM variant we don't recognize) must not stall
-                        # the whole run. Abandon it and move to the next one immediately — the
-                        # inner retries/waits are all well under this, so hitting it means the
-                        # item is genuinely stuck, not merely slow.
-                        try:
-                            captured = await asyncio.wait_for(
-                                self._capture_one(
-                                    detail_page, raw_dir, len(items) + 1, name, href, expand_hours
-                                ),
-                                timeout=PER_BUSINESS_TIMEOUT_S,
-                            )
-                        except TimeoutError:
-                            logger.info("skip: capture timed out", name=name)
-                            captured = None
-                        if captured is not None:
-                            items.append(captured)
-                            if on_progress is not None:
-                                await on_progress(len(items), max_results, name)
-                        # Between-business pacing. Kept randomized (never a fixed metronome
-                        # interval — that's the obvious bot signature) but trimmed: this was the
-                        # single largest contributor to per-item cost. See the README's tuning note.
-                        await humanize.dwell(280, 620)
-                        if await _is_blocked_fast(page):
-                            raise CaptureBlockedError("blocked mid-walk")
-
+                for cell_index, (cell_lat, cell_lng, cell_r) in enumerate(cells):
+                    if len(items) >= max_results:
+                        end_reason = "max_results"
+                        break
+                    if cell_index > 0:
+                        await humanize.dwell(500, 1000)  # human-paced gap between areas
+                    end_reason = await self._walk_area(
+                        page,
+                        detail_page,
+                        raw_dir,
+                        seen,
+                        items,
+                        query=query,
+                        location=location,
+                        max_results=max_results,
+                        expand_hours=expand_hours,
+                        cell_lat=cell_lat,
+                        cell_lng=cell_lng,
+                        cell_radius_km=cell_r,
+                        # The per-item exclusion filter always uses the job's TRUE overall
+                        # center/radius, never the cell's own (smaller) one — a cell's search
+                        # area can extend slightly past the true boundary at its outer edge (see
+                        # generate_grid_cells), so filtering against the cell radius would leak
+                        # businesses just past the real requested limit.
+                        filter_center_lat=center_lat,
+                        filter_center_lng=center_lng,
+                        filter_radius_km=radius_km,
+                        job_dir=job_dir,
+                        on_progress=on_progress,
+                        should_stop=should_stop,
+                    )
                     if len(items) >= max_results:
                         end_reason = "max_results"
                         break
             finally:
                 await context.close()
+
+        if tiled:
+            before = len(items)
+            items = _dedupe_by_name_phone(items)
+            if len(items) != before:
+                logger.info(
+                    "fuzzy dedup removed cross-cell duplicates", removed=before - len(items)
+                )
 
         manifest = CaptureManifest(
             job_id=job_id,
@@ -441,6 +584,139 @@ class CaptureEngine:
         )
         return manifest
 
+    async def _walk_area(
+        self,
+        page: Page,
+        detail_page: Page,
+        raw_dir: Path,
+        seen: dict[str, str],
+        items: list[CapturedItem],
+        *,
+        query: str,
+        location: str,
+        max_results: int,
+        expand_hours: bool,
+        cell_lat: float | None,
+        cell_lng: float | None,
+        cell_radius_km: float | None,
+        filter_center_lat: float | None,
+        filter_center_lng: float | None,
+        filter_radius_km: float | None,
+        job_dir: Path,
+        on_progress: ProgressCallback | None,
+        should_stop: object,
+    ) -> OcrEndReason:
+        """Searches ONE area (the job's whole location, or one grid cell when tiling a large
+        radius) and walks its results feed, appending newly-captured items into the SHARED
+        `items`/`seen` accumulators. `seen` is keyed by Google's own place id (falling back to
+        the href when absent) so a business surfacing in more than one overlapping cell is
+        recognized as already-captured rather than re-captured."""
+        search_url = _search_url(query, location, cell_lat, cell_lng, cell_radius_km)
+        await page.goto(search_url, wait_until="domcontentloaded")
+        await _dismiss_consent(page)
+        if await _is_blocked(page):
+            await page.screenshot(path=str(job_dir / "debug_blocked.png"))
+            raise CaptureBlockedError("blocked at navigation")
+
+        await page.wait_for_selector(
+            selectors.RESULTS_FEED, timeout=self._settings.ocr_nav_timeout_ms
+        )
+
+        end_reason: OcrEndReason = "end_of_list"
+        stagnation = 0
+        while len(items) < max_results:
+            anchors = await _collect_anchors(page)
+            new = [(h, n) for (h, n) in anchors if (_place_id_from_href(h) or h) not in seen]
+
+            if not new:
+                # Nothing new in view — try to load more, or stop.
+                feed = await page.query_selector(selectors.RESULTS_FEED)
+                feed_text = (await feed.inner_text()) if feed else ""
+                if selectors.END_OF_LIST_TEXT in feed_text:
+                    end_reason = "end_of_list"
+                    break
+                stagnation += 1
+                if stagnation >= STAGNATION_ROUNDS:
+                    end_reason = "stagnation"
+                    break
+                # Scroll the feed to lazy-load the next batch.
+                box = await feed.bounding_box() if feed else None
+                fx = (box["x"] + box["width"] / 2) if box else VIEWPORT["width"] * 0.2
+                fy = (box["y"] + box["height"] / 2) if box else VIEWPORT["height"] * 0.5
+                for _ in range(3):
+                    await humanize.wheel_over(page, fx, fy, 900)
+                    await humanize.dwell(180, 300)
+                await humanize.dwell(400, 650)
+                continue
+
+            stagnation = 0
+            for href, name in new:
+                if callable(should_stop) and should_stop():
+                    raise CaptureInterruptedError
+                if len(items) >= max_results:
+                    end_reason = "max_results"
+                    break
+                seen[_place_id_from_href(href) or href] = name
+
+                # Radius is enforced HERE, exactly — not via the search-URL bias above. The href
+                # already carries this business's own coordinates (!3d{lat}!4d{lng}), checked
+                # against the job's TRUE overall center/radius (never the cell's), so an
+                # out-of-radius result is skipped entirely: no capture, no timeout risk, and it
+                # never counts toward max_results.
+                outside, lat, lng, distance_km = _outside_radius(
+                    href, filter_center_lat, filter_center_lng, filter_radius_km
+                )
+                if outside:
+                    logger.info("skip: outside radius", name=name, distance_km=distance_km)
+                    continue
+
+                # Denominator is the TARGET (max_results), not the number of anchors discovered
+                # so far — Google lazy-loads ~7 cards at a time, so len(seen) would race ahead of
+                # what's actually being processed and looked like the tool "computes the total
+                # first". The pipeline corrects total to the real captured count once capture
+                # finishes (e.g. if the list ends early). Report BEFORE the (slow) capture so the
+                # UI names the business actually being worked on right now, not the previous one.
+                if on_progress is not None:
+                    await on_progress(len(items), max_results, name)
+                # Hard per-business ceiling: a listing whose panel never settles (dead click,
+                # endless spinner, DOM variant we don't recognize) must not stall the whole run.
+                # Abandon it and move to the next one immediately — the inner retries/waits are
+                # all well under this, so hitting it means the item is genuinely stuck, not
+                # merely slow.
+                try:
+                    captured = await asyncio.wait_for(
+                        self._capture_one(
+                            detail_page,
+                            raw_dir,
+                            len(items) + 1,
+                            name,
+                            href,
+                            expand_hours,
+                            lat,
+                            lng,
+                            distance_km,
+                        ),
+                        timeout=PER_BUSINESS_TIMEOUT_S,
+                    )
+                except TimeoutError:
+                    logger.info("skip: capture timed out", name=name)
+                    captured = None
+                if captured is not None:
+                    items.append(captured)
+                    if on_progress is not None:
+                        await on_progress(len(items), max_results, name)
+                # Between-business pacing. Kept randomized (never a fixed metronome interval —
+                # that's the obvious bot signature) but trimmed: this was the single largest
+                # contributor to per-item cost. See the README's tuning note.
+                await humanize.dwell(280, 620)
+                if await _is_blocked_fast(page):
+                    raise CaptureBlockedError("blocked mid-walk")
+
+            if len(items) >= max_results:
+                end_reason = "max_results"
+                break
+        return end_reason
+
     async def _capture_one(
         self,
         page: Page,
@@ -449,6 +725,9 @@ class CaptureEngine:
         name: str,
         href: str,
         expand_hours: bool,
+        lat: float | None = None,
+        lng: float | None = None,
+        distance_km: float | None = None,
     ) -> CapturedItem | None:
         """Open one business by NAVIGATING to its place href (each result <a>'s href is the
         canonical place URL) and screenshot the panel. Verified live (2026-07): a programmatic
@@ -473,7 +752,16 @@ class CaptureEngine:
                 hours_img = await _expand_and_capture_hours(page, panel, raw_dir, index, name)
                 if hours_img is not None:
                     images.append(hours_img)
-            return CapturedItem(index=index, name=name, maps_url=href, images=images, dom=dom)
+            return CapturedItem(
+                index=index,
+                name=name,
+                maps_url=href,
+                images=images,
+                dom=dom,
+                lat=lat,
+                lng=lng,
+                distance_km=distance_km,
+            )
         except Exception as exc:  # noqa: BLE001 - one listing failing must not abort the job
             logger.info("skip: capture error", name=name, error=str(exc))
             return None

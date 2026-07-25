@@ -7,8 +7,6 @@
 import { pool } from "./pool.js";
 import type { OcrJob } from "../types/db.js";
 
-const ACTIVE_STATUSES = ["queued", "capturing", "ocr", "parsing"];
-
 export async function createOcrJob(input: {
   createdBy: string;
   query: string;
@@ -16,10 +14,16 @@ export async function createOcrJob(input: {
   maxResults: number;
   expandHours: boolean;
   langs: string;
+  centerLat?: number | undefined;
+  centerLng?: number | undefined;
+  radiusKm?: number | undefined;
 }): Promise<OcrJob> {
   const { rows } = await pool.query<OcrJob>(
-    `INSERT INTO ocr_jobs (created_by, query, location, max_results, expand_hours, langs)
-     VALUES ($1, $2, $3, $4, $5, $6)
+    `INSERT INTO ocr_jobs (
+       created_by, query, location, max_results, expand_hours, langs,
+       center_lat, center_lng, radius_km
+     )
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
      RETURNING *`,
     [
       input.createdBy,
@@ -28,6 +32,9 @@ export async function createOcrJob(input: {
       input.maxResults,
       input.expandHours,
       input.langs,
+      input.centerLat ?? null,
+      input.centerLng ?? null,
+      input.radiusKm ?? null,
     ],
   );
   const job = rows[0];
@@ -35,14 +42,16 @@ export async function createOcrJob(input: {
   return job;
 }
 
-// Single-flight lock (§6). The DB also enforces this via a partial unique index, so this is the
-// friendly 409 path — the index is the hard guarantee against a race.
-export async function hasActiveOcrJob(): Promise<boolean> {
+// At most one job may actively run a Chromium/Maps session at a time — the DB also enforces
+// this via a partial unique index (ux_ocr_jobs_single_running) as the hard guarantee against a
+// race. Multiple jobs MAY sit 'queued' simultaneously (see migration 1784500000000): a new job
+// is never rejected, just appended to the queue — claim_pending_ocr_job() (Python) already
+// claims 'queued' rows oldest-first, so they auto-run in submission order.
+export async function countQueuedOcrJobs(): Promise<number> {
   const { rows } = await pool.query<{ n: string }>(
-    `SELECT count(*)::text AS n FROM ocr_jobs WHERE status = ANY($1)`,
-    [ACTIVE_STATUSES],
+    `SELECT count(*)::text AS n FROM ocr_jobs WHERE status = 'queued'`,
   );
-  return Number(rows[0]?.n ?? 0) > 0;
+  return Number(rows[0]?.n ?? 0);
 }
 
 export async function listOcrJobs(limit = 50): Promise<OcrJob[]> {

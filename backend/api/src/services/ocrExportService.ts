@@ -21,6 +21,9 @@ const HEADERS = [
   "Hours",
   "Email",
   "Image URL",
+  "Lat",
+  "Lng",
+  "Distance (km)",
   "Maps URL",
   "Needs Review",
 ] as const;
@@ -39,6 +42,9 @@ function toRow(b: OcrBusiness): (string | number | null)[] {
     b.hours_summary,
     b.email,
     b.image_url,
+    b.lat,
+    b.lng,
+    b.distance_km,
     b.maps_url,
     b.needs_review ? "yes" : "",
   ];

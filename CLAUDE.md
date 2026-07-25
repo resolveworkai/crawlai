@@ -143,8 +143,26 @@ on this status for a deploy decision.
   - Progress counters (`captured_count`/`ocr_done_count`/`current_business`) update correctly
     through both capture and OCR phases and denominate against `max_results`, not a racing
     discovered-count.
-  Needs `tesseract-ocr` (apt in Dockerfile) + pytesseract/Pillow/opencv-headless. Single-flight
-  (DB partial-unique index), retention purge of `raw/` PNGs, CAPTCHA→`blocked` stop.
+  - **Radius search + grid tiling (2026-07-25, `md/OCR_CRAWL.md`)**: `centerLat`/`centerLng`/
+    `radiusKm` on job creation → exact haversine filter against each business's own href-derived
+    coordinates (never a soft Maps-viewport guess). A radius bigger than one `cell_radius_km`
+    (default 2km) is tiled into overlapping sub-searches (`generate_grid_cells`, ring-based) so
+    Maps' relevance/stagnation cap doesn't silently crowd out real businesses in a big region —
+    walked sequentially within the same single Chromium session (never concurrent Maps
+    automation). Cross-cell duplicates deduped by Google's own place id (href's `!1s{hex}:{hex}`,
+    exact) with a fuzzy name+phone fallback pass. `ocr_businesses` gained `lat`/`lng`/
+    `distance_km` + `image_url` (hero photo, DOM-sourced).
+  - **Queueing (2026-07-25)**: `POST /ocr-crawl/jobs` never 409s anymore — a new job queues
+    (`queuePosition` in the response) and auto-runs the moment whatever's ahead finishes
+    (`main.py`'s claim loop already re-checks immediately; only the DB constraint changed, from
+    "≤1 job in queued/capturing/ocr/parsing" to "≤1 job actively **running**"). Still never more
+    than one concurrent automated Maps session — the safety property is unchanged, only the
+    submit-time UX (no more manual resubmit-and-wait).
+  - **`OCR_CRAWL_MAX_RESULTS`/`ocr_max_results`**: the per-job result cap moved from a static env
+    ceiling (200) to `crawl_settings.ocr_max_results` (DB-configurable, default 1000, Settings
+    screen slider), enforced at request time via `getCrawlSettings()`.
+  Needs `tesseract-ocr` (apt in Dockerfile) + pytesseract/Pillow/opencv-headless. Retention purge
+  of `raw/` PNGs, CAPTCHA→`blocked` stop.
   **⚠️ ToS: automating Maps violates it — low-volume/internal only; Places API is the compliant
   path for the same fields.**
 - **Known follow-up, not yet done**: `supabase/` (CLI config + old Lovable-era migrations) is dead

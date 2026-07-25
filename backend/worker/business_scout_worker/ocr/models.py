@@ -24,6 +24,9 @@ class OcrJob(BaseModel):
     created_by: UUID | None
     query: str
     location: str
+    center_lat: float | None
+    center_lng: float | None
+    radius_km: float | None
     max_results: int
     expand_hours: bool
     langs: str
@@ -65,6 +68,13 @@ class CapturedItem(BaseModel):
     maps_url: str | None = None
     images: list[str] = []
     dom: DomFields = DomFields()
+    # Parsed exactly from the place href's !3d{lat}!4d{lng} segment — Google's own coordinates
+    # for this business, not an estimate. distance_km is haversine from the job's center point
+    # (only set when the job was created with one); businesses beyond radius_km are never
+    # captured at all (filtered in the walk loop), so every item that reaches Stage B is in-range.
+    lat: float | None = None
+    lng: float | None = None
+    distance_km: float | None = None
 
 
 class CaptureManifest(BaseModel):
@@ -99,6 +109,9 @@ class ParsedBusiness(BaseModel):
     hours_weekly: dict[str, str] | None = None
     email: str | None = None
     image_url: str | None = None
+    lat: float | None = None
+    lng: float | None = None
+    distance_km: float | None = None
     ocr_confidence: float = 0.0
     needs_review: bool = False
     raw_text: str = ""

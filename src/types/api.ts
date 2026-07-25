@@ -133,6 +133,9 @@ export interface OcrJob {
   id: string;
   query: string;
   location: string;
+  center_lat: number | null;
+  center_lng: number | null;
+  radius_km: number | null;
   max_results: number;
   expand_hours: boolean;
   langs: string;
@@ -168,6 +171,9 @@ export interface OcrBusiness {
   hours_weekly: Record<string, unknown> | null;
   email: string | null;
   image_url: string | null;
+  lat: number | null;
+  lng: number | null;
+  distance_km: number | null;
   ocr_confidence: number | null;
   needs_review: boolean;
   raw_text: string | null;

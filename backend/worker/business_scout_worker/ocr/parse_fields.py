@@ -194,6 +194,9 @@ def parse_business(
     *,
     expand_hours: bool,
     dom: DomFields | None = None,
+    lat: float | None = None,
+    lng: float | None = None,
+    distance_km: float | None = None,
 ) -> ParsedBusiness:
     dom = dom or DomFields()
     lines = ocr.lines
@@ -257,6 +260,9 @@ def parse_business(
         hours_weekly=weekly or None,
         email=email.value,
         image_url=final_image_url,
+        lat=lat,
+        lng=lng,
+        distance_km=distance_km,
         ocr_confidence=round(ocr_confidence, 1),
         needs_review=needs_review,
         raw_text=ocr.raw_text,
