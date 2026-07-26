@@ -13,4 +13,12 @@ describe("StatusBadge", () => {
     render(<StatusBadge status="something-unrecognized" />);
     expect(screen.getByText("something-unrecognized")).toBeInTheDocument();
   });
+
+  it("renders Crawl (OCR)'s own statuses (ready/capturing/ocr/parsing/blocked)", () => {
+    for (const status of ["ready", "capturing", "ocr", "parsing", "blocked"]) {
+      const { unmount } = render(<StatusBadge status={status} />);
+      expect(screen.getByText(status)).toBeInTheDocument();
+      unmount();
+    }
+  });
 });

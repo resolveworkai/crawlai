@@ -197,6 +197,15 @@ describe("GET /stats/overview", () => {
     expect(Array.isArray(res.body.recentJobs)).toBe(true);
     expect(Array.isArray(res.body.recentlyEnriched)).toBe(true);
   });
+
+  it("includes Crawl (OCR) counts, kept distinct from the main crawler's", async () => {
+    const res = await viewerAgent.get("/stats/overview");
+    expect(res.status).toBe(200);
+    expect(res.body.stats).toHaveProperty("ocrBusinessesCount");
+    expect(res.body.stats).toHaveProperty("ocrJobsThisWeek");
+    expect(res.body.stats).toHaveProperty("ocrActiveJobsCount");
+    expect(typeof res.body.stats.ocrBusinessesCount).toBe("number");
+  });
 });
 
 describe("GET /geocode", () => {

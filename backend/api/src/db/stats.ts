@@ -6,6 +6,13 @@ export interface OverviewStats {
   crawlsThisWeek: number;
   aiExtractionsCount: number;
   activeJobsCount: number;
+  // Crawl (OCR) — a separate parallel job type (Google Maps capture, see md/OCR_CRAWL.md), kept
+  // as its own distinct counts rather than folded into the fields above: it has a different job
+  // vocabulary, different volume profile, and conflating "Crawls this week" across both would
+  // silently blur two very different pipelines.
+  ocrBusinessesCount: number;
+  ocrJobsThisWeek: number;
+  ocrActiveJobsCount: number;
 }
 
 export interface TrendPoint {
@@ -15,6 +22,7 @@ export interface TrendPoint {
 }
 
 const ACTIVE_JOB_STATUSES = ["pending", "discovering", "crawling", "paused"];
+const ACTIVE_OCR_JOB_STATUSES = ["queued", "capturing", "ocr", "parsing"];
 
 export async function getOverviewStats(): Promise<OverviewStats> {
   const { rows } = await pool.query<{
@@ -22,6 +30,9 @@ export async function getOverviewStats(): Promise<OverviewStats> {
     crawls_this_week: string;
     ai_extractions_count: string;
     active_jobs_count: string;
+    ocr_businesses_count: string;
+    ocr_jobs_this_week: string;
+    ocr_active_jobs_count: string;
   }>(
     `SELECT
        (SELECT count(*) FROM businesses WHERE merged_into_id IS NULL) AS total_businesses,
@@ -29,8 +40,11 @@ export async function getOverviewStats(): Promise<OverviewStats> {
        (SELECT count(*) FROM businesses
           WHERE (extras <> '{}'::jsonb OR ai_summary IS NOT NULL) AND merged_into_id IS NULL
        ) AS ai_extractions_count,
-       (SELECT count(*) FROM crawl_jobs WHERE status = ANY($1)) AS active_jobs_count`,
-    [ACTIVE_JOB_STATUSES],
+       (SELECT count(*) FROM crawl_jobs WHERE status = ANY($1)) AS active_jobs_count,
+       (SELECT count(*) FROM ocr_businesses) AS ocr_businesses_count,
+       (SELECT count(*) FROM ocr_jobs WHERE created_at >= now() - interval '7 days') AS ocr_jobs_this_week,
+       (SELECT count(*) FROM ocr_jobs WHERE status = ANY($2)) AS ocr_active_jobs_count`,
+    [ACTIVE_JOB_STATUSES, ACTIVE_OCR_JOB_STATUSES],
   );
   const row = rows[0];
   if (!row) throw new Error("getOverviewStats: aggregate query returned no row");
@@ -39,6 +53,9 @@ export async function getOverviewStats(): Promise<OverviewStats> {
     crawlsThisWeek: Number(row.crawls_this_week),
     aiExtractionsCount: Number(row.ai_extractions_count),
     activeJobsCount: Number(row.active_jobs_count),
+    ocrBusinessesCount: Number(row.ocr_businesses_count),
+    ocrJobsThisWeek: Number(row.ocr_jobs_this_week),
+    ocrActiveJobsCount: Number(row.ocr_active_jobs_count),
   };
 }
 

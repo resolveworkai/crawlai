@@ -45,6 +45,11 @@ export interface CrawlLog {
   level: "info" | "warn" | "error" | "debug";
   message: string;
   ts: string;
+  // The global /logs/stream SSE merges the main crawler's crawl_logs with Crawl (OCR)'s
+  // ocr_logs — this tags which one a given entry came from so the dashboard can render them
+  // distinctly. Optional only for backward-compat with any code still using this type without
+  // the merge (every entry the live stream sends now always carries it).
+  source?: "crawl" | "ocr";
 }
 
 export type EnrichmentStatus = "queued" | "crawling" | "enriched" | "failed";
@@ -105,6 +110,10 @@ export interface OverviewStats {
   crawlsThisWeek: number;
   aiExtractionsCount: number;
   activeJobsCount: number;
+  // Crawl (OCR) — a separate parallel job type, kept distinct from the counts above.
+  ocrBusinessesCount: number;
+  ocrJobsThisWeek: number;
+  ocrActiveJobsCount: number;
 }
 
 export interface TrendPoint {

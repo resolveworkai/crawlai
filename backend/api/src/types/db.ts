@@ -65,6 +65,16 @@ export interface CrawlLog {
   ts: Date;
 }
 
+// Same shape as CrawlLog — a distinct table (own FK to ocr_jobs) so the two job types' logs never
+// collide, merged only at read time by routes/jobs.ts's global /logs/stream.
+export interface OcrLog {
+  id: string;
+  job_id: string;
+  level: LogLevel;
+  message: string;
+  ts: Date;
+}
+
 export interface Business {
   id: string;
   created_by: string | null;

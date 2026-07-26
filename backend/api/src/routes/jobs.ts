@@ -10,6 +10,7 @@ import {
 } from "../schemas/jobs.js";
 import { deleteCrawlJob, findCrawlJobById, listCrawlJobs } from "../db/crawlJobs.js";
 import { listLogsForJob, listRecentLogs } from "../db/crawlLogs.js";
+import { listRecentOcrLogs } from "../db/ocrLogs.js";
 import { cancelJob, createJob, pauseJob, resumeJob, retryJob } from "../services/jobsService.js";
 import { NotFoundError } from "../errors.js";
 import { SseChannel } from "../lib/sse.js";
@@ -149,17 +150,29 @@ jobsRouter.get(
 );
 
 // Global recent-activity feed across all jobs — powers Overview + the Jobs list's console panel.
+// Merges the main crawler's crawl_logs with Crawl (OCR)'s ocr_logs (a separate table, its own FK
+// to ocr_jobs — see db/migrations/*ocr-logs.sql) so OCR activity is no longer invisible on the
+// dashboard. Two independent bigint cursors (the two tables are separate BIGSERIAL sequences, IDs
+// aren't comparable across them) — each entry is tagged with its `source` so the frontend can
+// render them distinctly.
 jobsRouter.get("/logs/stream", requireAuth, async (req, res) => {
   const channel = new SseChannel(res);
   let lastLogId = 0n;
+  let lastOcrLogId = 0n;
 
   const tick = async (): Promise<void> => {
-    const logs = await listRecentLogs(50);
-    const fresh = logs.filter((l) => BigInt(l.id) > lastLogId);
-    if (fresh.length > 0) {
-      lastLogId = BigInt(fresh[0]!.id);
-      channel.send("logs", fresh);
-    }
+    const [logs, ocrLogs] = await Promise.all([listRecentLogs(50), listRecentOcrLogs(50)]);
+    const freshCrawl = logs.filter((l) => BigInt(l.id) > lastLogId);
+    const freshOcr = ocrLogs.filter((l) => BigInt(l.id) > lastOcrLogId);
+    if (freshCrawl.length > 0) lastLogId = BigInt(freshCrawl[0]!.id);
+    if (freshOcr.length > 0) lastOcrLogId = BigInt(freshOcr[0]!.id);
+
+    const fresh = [
+      ...freshCrawl.map((l) => ({ ...l, source: "crawl" as const })),
+      ...freshOcr.map((l) => ({ ...l, source: "ocr" as const })),
+    ].sort((a, b) => new Date(a.ts).getTime() - new Date(b.ts).getTime());
+
+    if (fresh.length > 0) channel.send("logs", fresh);
   };
 
   await tick();

@@ -13,6 +13,7 @@ from uuid import UUID
 from psycopg.types.json import Jsonb
 from psycopg_pool import AsyncConnectionPool
 
+from business_scout_worker.models import LogLevel
 from business_scout_worker.ocr.models import OcrEndReason, OcrJob, OcrJobStatus, ParsedBusiness
 
 
@@ -33,6 +34,17 @@ async def claim_pending_ocr_job(pool: AsyncConnectionPool) -> OcrJob | None:
         )
         row = await cur.fetchone()
     return OcrJob.model_validate(row) if row is not None else None
+
+
+async def write_log(pool: AsyncConnectionPool, job_id: UUID, level: LogLevel, message: str) -> None:
+    """Mirrors business_scout_worker/jobs.py's write_log for the main crawler — a SEPARATE table
+    (ocr_logs, its own FK to ocr_jobs) so the two job types' log streams never collide, merged
+    together only at read time by the Node API's global /logs/stream SSE (routes/jobs.ts)."""
+    async with pool.connection() as conn:
+        await conn.execute(
+            "INSERT INTO ocr_logs (job_id, level, message) VALUES (%s, %s, %s)",
+            (str(job_id), level, message),
+        )
 
 
 async def set_ocr_status(pool: AsyncConnectionPool, job_id: UUID, status: OcrJobStatus) -> None:

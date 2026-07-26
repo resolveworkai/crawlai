@@ -7,9 +7,18 @@ import { StatusBadge } from "@/components/status-badge";
 import { RequireAuth } from "@/components/require-auth";
 import { useOverviewStats } from "@/hooks/useStats";
 import { useGlobalLogStream } from "@/hooks/useJobs";
+import { useOcrJobs } from "@/hooks/useOcrCrawl";
 import { timeAgo } from "@/lib/utils";
 import { format } from "date-fns";
-import { ArrowUpRight, Building2, Database, Sparkles, Zap, type LucideIcon } from "lucide-react";
+import {
+  ArrowUpRight,
+  Building2,
+  Camera,
+  Database,
+  Sparkles,
+  Zap,
+  type LucideIcon,
+} from "lucide-react";
 import {
   Area,
   AreaChart,
@@ -60,8 +69,10 @@ function Stat({
 function Dashboard() {
   const { data, isLoading } = useOverviewStats();
   const logs = useGlobalLogStream();
+  const { data: ocrJobs = [] } = useOcrJobs();
   const stats = data?.stats;
   const trend = data?.trend ?? [];
+  const recentOcrJobs = ocrJobs.slice(0, 4);
 
   return (
     <AppShell title="Overview" subtitle="Real-time signal across discovery, crawls and enrichment.">
@@ -182,7 +193,9 @@ function Dashboard() {
             {logs.length === 0 && <p className="text-muted-foreground">No activity yet.</p>}
             {logs.map((l) => (
               <div
-                key={l.id}
+                // Composite key: crawl_logs and ocr_logs are separate BIGSERIAL sequences, so a
+                // bare l.id can collide between the two merged sources.
+                key={`${l.source ?? "crawl"}-${l.id}`}
                 className="flex gap-2 border-l-2 border-border pl-2.5 py-0.5"
                 style={{
                   borderLeftColor:
@@ -197,6 +210,11 @@ function Dashboard() {
                   {new Date(l.ts).toLocaleTimeString()}
                 </span>
                 <div className="min-w-0">
+                  {l.source === "ocr" && (
+                    <span className="mr-1.5 rounded bg-primary/15 px-1 py-0.5 text-[9px] font-semibold uppercase text-primary">
+                      OCR
+                    </span>
+                  )}
                   <span className="text-foreground">{l.message}</span>
                 </div>
               </div>
@@ -286,6 +304,59 @@ function Dashboard() {
                 <span className="font-mono text-[10px] text-muted-foreground">
                   {timeAgo(b.updated_at)}
                 </span>
+              </div>
+            ))}
+          </div>
+        </Card>
+      </div>
+
+      {/* Crawl (OCR) — a separate parallel pipeline (Google Maps capture, see md/OCR_CRAWL.md)
+          with its own job vocabulary and volume profile; reported here alongside the main
+          crawler's stats, never merged into them. */}
+      <div className="mt-6">
+        <Card className="border-border bg-card">
+          <div className="flex flex-col gap-3 border-b border-border p-5 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <div className="flex items-center gap-2">
+                <Camera className="h-4 w-4 text-primary" />
+                <h3 className="font-display text-base font-semibold">Crawl (OCR)</h3>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                Google Maps capture pipeline · {stats?.ocrBusinessesCount ?? 0} businesses captured
+                · {stats?.ocrJobsThisWeek ?? 0} jobs this week
+                {(stats?.ocrActiveJobsCount ?? 0) > 0 && ` · ${stats?.ocrActiveJobsCount} active`}
+              </p>
+            </div>
+            <Button asChild size="sm" variant="ghost" className="text-muted-foreground gap-1">
+              <Link to="/ocr-crawl">
+                View all <ArrowUpRight className="h-3.5 w-3.5" />
+              </Link>
+            </Button>
+          </div>
+          <div className="divide-y divide-border">
+            {recentOcrJobs.length === 0 && (
+              <p className="p-5 text-sm text-muted-foreground">No OCR jobs yet.</p>
+            )}
+            {recentOcrJobs.map((j) => (
+              <div
+                key={j.id}
+                className="flex flex-col gap-2 px-5 py-3.5 sm:flex-row sm:items-center sm:justify-between"
+              >
+                <div className="min-w-0">
+                  <div className="truncate text-sm font-medium capitalize">
+                    {j.query} <span className="text-muted-foreground">· {j.location}</span>
+                  </div>
+                  <div className="mt-0.5 font-mono text-[10px] text-muted-foreground">
+                    {j.id.slice(0, 8)} · {j.captured_count}/{j.total_count || j.max_results}{" "}
+                    captured
+                  </div>
+                </div>
+                <div className="flex shrink-0 items-center gap-3">
+                  <StatusBadge status={j.status} />
+                  <span className="font-mono text-[10px] text-muted-foreground">
+                    {timeAgo(j.started_at ?? j.created_at)}
+                  </span>
+                </div>
               </div>
             ))}
           </div>

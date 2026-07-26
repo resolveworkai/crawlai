@@ -42,6 +42,12 @@ async def run_ocr_job(
     try:
         job_dir.mkdir(parents=True, exist_ok=True)
         await ocr_jobs.set_ocr_storage_dir(pool, job.id, str(job.id))
+        # Persisted to ocr_logs (not just structlog/stdout) so the dashboard's global "Live crawl
+        # log" panel (routes/jobs.ts's /logs/stream) can show real OCR activity too — it was
+        # previously invisible there entirely. See db/migrations/*ocr-logs.sql.
+        await ocr_jobs.write_log(
+            pool, job.id, "info", f"OCR job started: {job.query} near {job.location}"
+        )
 
         # RETRY / RESUME: a manifest.json already on disk means a prior attempt on this exact
         # job (same id — retry resets the existing row rather than creating a new one, see
@@ -55,6 +61,12 @@ async def run_ocr_job(
                 prior = CaptureManifest.model_validate_json(manifest_path.read_text("utf-8"))
                 resume_items = prior.items
                 log.info("resuming from prior manifest", already_captured=len(resume_items))
+                await ocr_jobs.write_log(
+                    pool,
+                    job.id,
+                    "info",
+                    f"Resuming: {len(resume_items)} businesses already captured, skipping them",
+                )
             except Exception as exc:  # noqa: BLE001 - a corrupt manifest must not block a retry
                 log.warning("prior manifest unreadable, starting capture fresh", error=str(exc))
 
@@ -72,6 +84,10 @@ async def run_ocr_job(
             await ocr_jobs.set_ocr_counts(
                 pool, job.id, captured=captured, total=discovered, current_business=current
             )
+            if current is not None:
+                await ocr_jobs.write_log(
+                    pool, job.id, "info", f"Capturing: {current} ({captured}/{discovered})"
+                )
 
         engine = CaptureEngine(settings)
         manifest = await engine.run(
@@ -93,6 +109,12 @@ async def run_ocr_job(
             pool, job.id, total=len(manifest.items), captured=len(manifest.items)
         )
         log.info("ocr capture done", count=len(manifest.items), end_reason=manifest.end_reason)
+        await ocr_jobs.write_log(
+            pool,
+            job.id,
+            "info",
+            f"Capture done: {len(manifest.items)} businesses ({manifest.end_reason})",
+        )
 
         # --- Stage B: OCR + parse ---
         # Run up to settings.ocr_concurrency businesses' OCR concurrently (asyncio.to_thread puts
@@ -102,6 +124,7 @@ async def run_ocr_job(
         # internally. This is orthogonal: running N single-threaded calls in parallel across
         # businesses is what actually uses multiple CPU cores for the batch.
         await ocr_jobs.set_ocr_status(pool, job.id, "ocr")
+        await ocr_jobs.write_log(pool, job.id, "info", "OCR (Tesseract) stage starting")
         # RESUME: rows already in ocr_businesses (from a prior attempt on this same job — the
         # resumed manifest items above) already have real OCR'd/parsed data. Re-running them would
         # be safe (insert_ocr_business is idempotent) but wasteful — skip straight to the items
@@ -158,6 +181,9 @@ async def run_ocr_job(
                 end_reason="error",
                 error_message="Interrupted by worker shutdown — relaunch the job.",
             )
+            await ocr_jobs.write_log(
+                pool, job.id, "warn", "Job interrupted by worker shutdown mid-OCR"
+            )
             log.info("ocr job interrupted mid-OCR — marked failed for relaunch")
             return
 
@@ -171,6 +197,7 @@ async def run_ocr_job(
         )
 
         await ocr_jobs.finish_ocr_job(pool, job.id, "ready", end_reason=manifest.end_reason)
+        await ocr_jobs.write_log(pool, job.id, "info", f"Job ready: {len(results)} businesses")
         log.info("ocr job ready", rows=len(results))
 
     except CaptureInterruptedError:
@@ -181,14 +208,19 @@ async def run_ocr_job(
             end_reason="error",
             error_message="Interrupted by worker shutdown — relaunch the job.",
         )
+        await ocr_jobs.write_log(
+            pool, job.id, "warn", "Job interrupted by worker shutdown mid-capture"
+        )
         log.info("ocr job interrupted mid-capture — marked failed for relaunch")
     except CaptureBlockedError as exc:
         await ocr_jobs.finish_ocr_job(
             pool, job.id, "blocked", end_reason="blocked", error_message=str(exc)[:500]
         )
+        await ocr_jobs.write_log(pool, job.id, "warn", f"Job blocked: {str(exc)[:200]}")
         log.warning("ocr job blocked", error=str(exc))
     except Exception as exc:  # noqa: BLE001 - a crashed job must still reach a terminal DB state
         await ocr_jobs.finish_ocr_job(
             pool, job.id, "failed", end_reason="error", error_message=str(exc)[:500]
         )
+        await ocr_jobs.write_log(pool, job.id, "error", f"Job failed: {str(exc)[:200]}")
         log.error("ocr job failed", error=str(exc))

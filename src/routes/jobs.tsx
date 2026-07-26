@@ -210,7 +210,9 @@ function Jobs() {
             )}
             {logs.map((l) => (
               <div
-                key={l.id}
+                // Composite key: crawl_logs and ocr_logs are separate BIGSERIAL sequences, so a
+                // bare l.id can collide between the two sources this merged stream sends.
+                key={`${l.source ?? "crawl"}-${l.id}`}
                 className="flex gap-2 border-l-2 py-0.5 pl-2.5"
                 style={{
                   borderLeftColor:
@@ -225,6 +227,11 @@ function Jobs() {
                   {new Date(l.ts).toLocaleTimeString()}
                 </span>
                 <div className="min-w-0">
+                  {l.source === "ocr" && (
+                    <span className="mr-1.5 rounded bg-primary/15 px-1 py-0.5 text-[9px] font-semibold uppercase text-primary">
+                      OCR
+                    </span>
+                  )}
                   <span
                     className={
                       l.level === "error"

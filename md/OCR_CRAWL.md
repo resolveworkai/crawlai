@@ -130,12 +130,12 @@ detection risk.
 
 | Layer | Files |
 |---|---|
-| Schema | `db/migrations/*ocr-crawl.sql` + follow-ups — `ocr_jobs` (center/radius, single-**running** partial-unique index) + `ocr_businesses` (lat/lng/distance_km, image_url) |
-| Node API | `routes/ocrCrawl.ts`, `db/ocrJobs.ts` + `db/ocrBusinesses.ts`, `services/ocrExportService.ts`, `lib/ocrRetention.ts`, `schemas/ocrCrawl.ts` |
+| Schema | `db/migrations/*ocr-crawl.sql` + follow-ups — `ocr_jobs` (center/radius, retry_count, single-**running** partial-unique index) + `ocr_businesses` (lat/lng/distance_km, image_url) + `ocr_logs` (own FK, mirrors `crawl_logs`) |
+| Node API | `routes/ocrCrawl.ts`, `db/ocrJobs.ts` + `db/ocrBusinesses.ts` + `db/ocrLogs.ts`, `services/ocrExportService.ts`, `lib/ocrRetention.ts`, `schemas/ocrCrawl.ts` |
 | Worker (Stage A capture) | `business_scout_worker/ocr/capture.py` (+ `selectors.py`, `humanize.py`) |
 | Worker (Stage B OCR+parse) | `ocr/preprocess.py`, `ocr/ocr_engine.py`, `ocr/parse_fields.py` |
-| Worker orchestration | `ocr/pipeline.py`, `ocr/jobs.py`, wired into `main.py` (LISTEN `ocr_crawl_jobs`) |
-| UI | `src/routes/ocr-crawl.tsx`, `src/hooks/useOcrCrawl.ts`, sidebar "Crawl (OCR)" |
+| Worker orchestration | `ocr/pipeline.py`, `ocr/jobs.py` (incl. `write_log`), wired into `main.py` (LISTEN `ocr_crawl_jobs`) |
+| UI | `src/routes/ocr-crawl.tsx`, `src/hooks/useOcrCrawl.ts`, sidebar "Crawl (OCR)"; also surfaced on the dashboard (`src/routes/index.tsx`'s "Crawl (OCR)" card + the merged "Live crawl log" stream) |
 
 **Storage:** `OCR_CAPTURES_DIR/<jobId>/{manifest.json, results.json, raw/*.png}`. The heavy `raw/`
 PNGs are purged after `OCR_CRAWL_RETENTION_DAYS` (boot + daily, `lib/ocrRetention.ts`); DB rows and

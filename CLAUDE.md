@@ -175,6 +175,28 @@ on this status for a deploy decision.
     across all attempts) always stay viewable/exportable even if the job never reaches `ready` —
     `/results`/`/export` never gated on status, and the UI's results table now also renders for a
     failed/blocked job with `captured_count > 0`. New column: `ocr_jobs.retry_count`.
+  - **Dashboard reporting (2026-07-26)**: the Overview screen (`GET /stats/overview`,
+    `db/stats.ts`) previously only reported the main Overpass crawler — OCR was invisible there.
+    `getOverviewStats()` now also returns `ocrBusinessesCount`/`ocrJobsThisWeek`/
+    `ocrActiveJobsCount`, kept as distinct fields (never merged into `crawlsThisWeek`/
+    `activeJobsCount` — two different job vocabularies and volume profiles). The Overview page
+    (`src/routes/index.tsx`) gained a "Crawl (OCR)" card — a summary line + the 4 most recent OCR
+    jobs (reusing the existing `useOcrJobs()` hook, no new endpoint needed for the list) with a
+    "View all" link to `/ocr-crawl`. `StatusBadge` (`components/status-badge.tsx`) gained styles
+    for OCR's own status vocabulary (`ready`/`capturing`/`ocr`/`parsing`/`blocked`) — it previously
+    only covered the main crawler's statuses and silently fell back to the "queued" (gray) style
+    for all of these.
+  - **Live crawl logs (2026-07-26)**: OCR jobs previously wrote activity only to structlog/stdout
+    — invisible on the dashboard's "Live crawl log" panel, which only ever read `crawl_logs` (main
+    crawler). New `ocr_logs` table (own FK to `ocr_jobs`, same `log_level` enum, migration
+    `1784700000000`); `ocr/jobs.py write_log()` mirrors the main crawler's, called from
+    `pipeline.py` at job start/resume/per-business-capture/capture-done/OCR-stage-start/ready/
+    blocked/failed. `GET /logs/stream` (`routes/jobs.ts`) now runs two parallel queries
+    (`listRecentLogs` + `listRecentOcrLogs`, two independent bigint cursors since they're separate
+    sequences), tags each entry `source: 'crawl'|'ocr'`, and merges+sorts by `ts` before sending.
+    Frontend (`index.tsx` + `jobs.tsx`, both consumers of the same stream) render an "OCR" badge on
+    tagged entries and key list items by `${source}-${id}` — a real key-collision fix, since the
+    two tables' IDs aren't unique across each other.
   Needs `tesseract-ocr` (apt in Dockerfile) + pytesseract/Pillow/opencv-headless. Retention purge
   of `raw/` PNGs, CAPTCHA→`blocked` stop.
   **⚠️ ToS: automating Maps violates it — low-volume/internal only; Places API is the compliant
