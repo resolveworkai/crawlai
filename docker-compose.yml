@@ -89,6 +89,16 @@ services:
       # that uses multiple CPU cores across a batch. Default 3 — raise toward the container's
       # core count minus 1 if OCR still looks slow; lower to 1 to fully serialize again.
       OCR_CONCURRENCY: ${OCR_CONCURRENCY:-3}
+      # Marketing / Messaging — encrypts the operator's SMTP password at rest (AES-256-GCM). Blank
+      # by default (matching the GOOGLE_API_KEY/API_KEYS pattern — never commit a real key); absent
+      # ⇒ email-credential save/test are disabled (wa.me/vCard still work). Set a 64-hex-char value
+      # in a local .env to enable email. Generate:
+      #   node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+      MESSAGING_ENCRYPTION_KEY: ${MESSAGING_ENCRYPTION_KEY:-}
+      # Base URL where THIS backend's /unsubscribe route is publicly reachable — embedded in every
+      # marketing email's unsubscribe footer. Defaults to the host-mapped backend port for local dev;
+      # set to the real public URL in production so recipients' links resolve.
+      APP_PUBLIC_URL: ${APP_PUBLIC_URL:-http://localhost:4010}
     volumes:
       - business_scout_exports:/app/data/exports
       - business_scout_ocr_captures:/app/data/ocr_captures

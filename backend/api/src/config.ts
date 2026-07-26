@@ -57,6 +57,17 @@ const envSchema = z.object({
   // (DB-configurable via the Settings screen, up to 1000), enforced at request time in
   // routes/ocrCrawl.ts. This just bounds what OCR_CRAWL_MAX_RESULTS itself may be set to.
   OCR_CRAWL_MAX_RESULTS: z.coerce.number().int().positive().max(1000).default(25),
+  // Marketing / Messaging tool — 64 hex chars (32 bytes) that encrypt the operator's SMTP
+  // password at rest (AES-256-GCM, lib/messagingCrypto). Absent = email-credential save/test
+  // refuse with a clear message (isEncryptionAvailable() === false), rather than the app failing
+  // to boot or storing a secret in plaintext — WhatsApp (click-to-chat/vCard) needs no secret and
+  // keeps working. Generate with:
+  //   node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+  MESSAGING_ENCRYPTION_KEY: z.string().optional(),
+  // Public base URL of THIS app (e.g. https://scout.example.com), used to build the absolute
+  // unsubscribe link embedded in every marketing email's footer. Defaults to the frontend origin
+  // for local dev; set to the real public URL in production so the link resolves for recipients.
+  APP_PUBLIC_URL: z.string().optional(),
 });
 
 function loadConfig() {

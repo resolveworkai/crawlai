@@ -275,3 +275,84 @@ export interface OcrBusiness {
   source_images: string[];
   created_at: Date;
 }
+
+// --- Marketing / Messaging (see md/MARKETING.md + db/migrations/*marketing.sql) ---
+
+export type MessageChannel = "whatsapp" | "email";
+export type CampaignStatus = "draft" | "sending" | "completed" | "failed" | "cancelled";
+export type RecipientStatus = "pending" | "sent" | "failed" | "skipped";
+export type SuppressionReason = "unsubscribed" | "bounced" | "manual";
+
+export interface EmailCredentials {
+  id: 1;
+  smtp_host: string | null;
+  smtp_port: number | null;
+  smtp_secure: boolean;
+  smtp_user: string | null;
+  smtp_password_encrypted: string | null; // AES-256-GCM envelope — NEVER sent to the client
+  from_name: string | null;
+  from_email: string | null;
+  reply_to: string | null;
+  org_address: string | null;
+  verified: boolean;
+  updated_at: Date;
+}
+
+export interface MessageTemplate {
+  id: string;
+  channel: MessageChannel;
+  name: string;
+  subject: string | null;
+  body: string;
+  created_by: string | null;
+  created_at: Date;
+  updated_at: Date;
+}
+
+export interface MessageTemplateImage {
+  id: string;
+  template_id: string;
+  cid: string;
+  filename: string;
+  mime: string;
+  bytes: Buffer;
+  created_at: Date;
+}
+
+export interface Campaign {
+  id: string;
+  channel: MessageChannel;
+  template_id: string | null;
+  subject: string | null;
+  body: string;
+  status: CampaignStatus;
+  total_count: number;
+  sent_count: number;
+  failed_count: number;
+  skipped_count: number;
+  created_by: string | null;
+  created_at: Date;
+  started_at: Date | null;
+  finished_at: Date | null;
+}
+
+export interface CampaignRecipient {
+  id: string;
+  campaign_id: string;
+  business_name: string;
+  business_type: string | null;
+  location: string | null;
+  phone: string | null;
+  email: string | null;
+  wa_link: string | null;
+  status: RecipientStatus;
+  error: string | null;
+  sent_at: Date | null;
+  created_at: Date;
+}
+
+export interface EmailSuppression {
+  email: string;
+  reason: SuppressionReason;
+  created_at: Date;
+}

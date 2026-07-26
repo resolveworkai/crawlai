@@ -192,6 +192,87 @@ export interface OcrBusiness {
   created_at: string;
 }
 
+// --- Marketing / Messaging (see md/MARKETING.md) ---
+
+export type MessageChannel = "whatsapp" | "email";
+export type CampaignStatus = "draft" | "sending" | "completed" | "failed" | "cancelled";
+export type RecipientStatus = "pending" | "sent" | "failed" | "skipped";
+
+export interface MarketingRecipient {
+  businessName: string;
+  businessType: string | null;
+  location: string | null;
+  phone: string | null;
+  email: string | null;
+}
+
+export interface RecipientPreview {
+  recipients: MarketingRecipient[];
+  total: number;
+  withPhone: number;
+  withEmail: number;
+}
+
+export interface PublicEmailCredentials {
+  configured: boolean;
+  verified: boolean;
+  smtpHost: string | null;
+  smtpPort: number | null;
+  smtpSecure: boolean;
+  smtpUser: string | null;
+  fromName: string | null;
+  fromEmail: string | null;
+  replyTo: string | null;
+  orgAddress: string | null;
+  updatedAt: string;
+}
+
+export interface MessageTemplate {
+  id: string;
+  channel: MessageChannel;
+  name: string;
+  subject: string | null;
+  body: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface Campaign {
+  id: string;
+  channel: MessageChannel;
+  template_id: string | null;
+  subject: string | null;
+  body: string;
+  status: CampaignStatus;
+  total_count: number;
+  sent_count: number;
+  failed_count: number;
+  skipped_count: number;
+  created_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+}
+
+export interface CampaignRecipient {
+  id: string;
+  campaign_id: string;
+  business_name: string;
+  business_type: string | null;
+  location: string | null;
+  phone: string | null;
+  email: string | null;
+  wa_link: string | null;
+  status: RecipientStatus;
+  error: string | null;
+  sent_at: string | null;
+}
+
+export interface EmailSuppression {
+  email: string;
+  reason: "unsubscribed" | "bounced" | "manual";
+  created_at: string;
+}
+
 export type ExportFormat = "xlsx" | "csv" | "json";
 
 export interface ExportRecord {

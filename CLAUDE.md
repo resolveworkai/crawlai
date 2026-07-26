@@ -201,6 +201,24 @@ on this status for a deploy decision.
   of `raw/` PNGs, CAPTCHA→`blocked` stop.
   **⚠️ ToS: automating Maps violates it — low-volume/internal only; Places API is the compliant
   path for the same fields.**
+- **Marketing / Messaging outreach tool (2026-07-26, `md/MARKETING.md`)**: acts on the discovered
+  businesses — WhatsApp + Email outreach to onboard them. New sidebar group **Marketing**
+  (`/marketing` composer, `/marketing/campaigns` history). Recipients come from an uploaded
+  CSV/XLSX AND/or selected finished OCR jobs, **deduped to unique businesses** carrying
+  type+location (`lib/recipientParse.ts`). **WhatsApp = click-to-chat + vCard** (no automation, no
+  credentials, ToS-safe): per-business `wa.me` deep link opens WhatsApp with the curated message
+  pre-filled (operator presses Send), and a `.vcf` export saves every business by name into
+  contacts. **Email = SMTP (nodemailer)** with inline CID images, `{business_name}`-style
+  placeholders (`lib/placeholders.ts`), throttled bulk send, test-send, **unsubscribe footer +
+  suppression list** (public HMAC-token `/unsubscribe`). SMTP password is **AES-256-GCM** at rest
+  (`lib/messagingCrypto.ts`, key = `MESSAGING_ENCRYPTION_KEY` env; absent ⇒ email creds disabled,
+  wa.me/vCard still work), never returned to the client. Migration `1784800000000` adds
+  `email_credentials`/`message_templates`(+images)/`campaigns`/`campaign_recipients`/
+  `email_suppressions`. New dep: `nodemailer` (lazy-imported in `emailService` to stay out of the
+  hot import graph). New env: `MESSAGING_ENCRYPTION_KEY` + `APP_PUBLIC_URL` (unsubscribe-link base).
+  Backend `routes/marketing.ts`; frontend `routes/marketing.tsx` + `hooks/useMarketing.ts`.
+  ⚠️ Same cold-outreach ToS/legal posture as the Maps scraping — compliance guardrails are the
+  responsible-use minimum; volume stays low/manual.
 - **Known follow-up, not yet done**: `supabase/` (CLI config + old Lovable-era migrations) is dead
   weight left over from the original scaffold — the real schema is `db/migrations/*.sql` via
   node-pg-migrate. Safe to delete, just hasn't been done. Prod deployment target (which host, TLS

@@ -11,6 +11,7 @@
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as SettingsRouteImport } from './routes/settings'
 import { Route as OcrCrawlRouteImport } from './routes/ocr-crawl'
+import { Route as MarketingRouteImport } from './routes/marketing'
 import { Route as LoginRouteImport } from './routes/login'
 import { Route as JobsRouteImport } from './routes/jobs'
 import { Route as FieldsRouteImport } from './routes/fields'
@@ -18,6 +19,7 @@ import { Route as ExportsRouteImport } from './routes/exports'
 import { Route as DiscoverRouteImport } from './routes/discover'
 import { Route as BusinessesRouteImport } from './routes/businesses'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as MarketingCampaignsRouteImport } from './routes/marketing.campaigns'
 
 const SettingsRoute = SettingsRouteImport.update({
   id: '/settings',
@@ -27,6 +29,11 @@ const SettingsRoute = SettingsRouteImport.update({
 const OcrCrawlRoute = OcrCrawlRouteImport.update({
   id: '/ocr-crawl',
   path: '/ocr-crawl',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const MarketingRoute = MarketingRouteImport.update({
+  id: '/marketing',
+  path: '/marketing',
   getParentRoute: () => rootRouteImport,
 } as any)
 const LoginRoute = LoginRouteImport.update({
@@ -64,6 +71,11 @@ const IndexRoute = IndexRouteImport.update({
   path: '/',
   getParentRoute: () => rootRouteImport,
 } as any)
+const MarketingCampaignsRoute = MarketingCampaignsRouteImport.update({
+  id: '/campaigns',
+  path: '/campaigns',
+  getParentRoute: () => MarketingRoute,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
@@ -73,8 +85,10 @@ export interface FileRoutesByFullPath {
   '/fields': typeof FieldsRoute
   '/jobs': typeof JobsRoute
   '/login': typeof LoginRoute
+  '/marketing': typeof MarketingRouteWithChildren
   '/ocr-crawl': typeof OcrCrawlRoute
   '/settings': typeof SettingsRoute
+  '/marketing/campaigns': typeof MarketingCampaignsRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
@@ -84,8 +98,10 @@ export interface FileRoutesByTo {
   '/fields': typeof FieldsRoute
   '/jobs': typeof JobsRoute
   '/login': typeof LoginRoute
+  '/marketing': typeof MarketingRouteWithChildren
   '/ocr-crawl': typeof OcrCrawlRoute
   '/settings': typeof SettingsRoute
+  '/marketing/campaigns': typeof MarketingCampaignsRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -96,8 +112,10 @@ export interface FileRoutesById {
   '/fields': typeof FieldsRoute
   '/jobs': typeof JobsRoute
   '/login': typeof LoginRoute
+  '/marketing': typeof MarketingRouteWithChildren
   '/ocr-crawl': typeof OcrCrawlRoute
   '/settings': typeof SettingsRoute
+  '/marketing/campaigns': typeof MarketingCampaignsRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -109,8 +127,10 @@ export interface FileRouteTypes {
     | '/fields'
     | '/jobs'
     | '/login'
+    | '/marketing'
     | '/ocr-crawl'
     | '/settings'
+    | '/marketing/campaigns'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
@@ -120,8 +140,10 @@ export interface FileRouteTypes {
     | '/fields'
     | '/jobs'
     | '/login'
+    | '/marketing'
     | '/ocr-crawl'
     | '/settings'
+    | '/marketing/campaigns'
   id:
     | '__root__'
     | '/'
@@ -131,8 +153,10 @@ export interface FileRouteTypes {
     | '/fields'
     | '/jobs'
     | '/login'
+    | '/marketing'
     | '/ocr-crawl'
     | '/settings'
+    | '/marketing/campaigns'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -143,6 +167,7 @@ export interface RootRouteChildren {
   FieldsRoute: typeof FieldsRoute
   JobsRoute: typeof JobsRoute
   LoginRoute: typeof LoginRoute
+  MarketingRoute: typeof MarketingRouteWithChildren
   OcrCrawlRoute: typeof OcrCrawlRoute
   SettingsRoute: typeof SettingsRoute
 }
@@ -161,6 +186,13 @@ declare module '@tanstack/react-router' {
       path: '/ocr-crawl'
       fullPath: '/ocr-crawl'
       preLoaderRoute: typeof OcrCrawlRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/marketing': {
+      id: '/marketing'
+      path: '/marketing'
+      fullPath: '/marketing'
+      preLoaderRoute: typeof MarketingRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/login': {
@@ -212,8 +244,27 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof IndexRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/marketing/campaigns': {
+      id: '/marketing/campaigns'
+      path: '/campaigns'
+      fullPath: '/marketing/campaigns'
+      preLoaderRoute: typeof MarketingCampaignsRouteImport
+      parentRoute: typeof MarketingRoute
+    }
   }
 }
+
+interface MarketingRouteChildren {
+  MarketingCampaignsRoute: typeof MarketingCampaignsRoute
+}
+
+const MarketingRouteChildren: MarketingRouteChildren = {
+  MarketingCampaignsRoute: MarketingCampaignsRoute,
+}
+
+const MarketingRouteWithChildren = MarketingRoute._addFileChildren(
+  MarketingRouteChildren,
+)
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
@@ -223,6 +274,7 @@ const rootRouteChildren: RootRouteChildren = {
   FieldsRoute: FieldsRoute,
   JobsRoute: JobsRoute,
   LoginRoute: LoginRoute,
+  MarketingRoute: MarketingRouteWithChildren,
   OcrCrawlRoute: OcrCrawlRoute,
   SettingsRoute: SettingsRoute,
 }

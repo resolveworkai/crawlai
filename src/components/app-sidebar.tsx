@@ -10,6 +10,8 @@ import {
   Radar,
   Download,
   Camera,
+  Megaphone,
+  Send,
   LogOut,
 } from "lucide-react";
 import {
@@ -34,6 +36,11 @@ const mainItems = [
   { title: "Crawl (OCR)", url: "/ocr-crawl", icon: Camera },
   { title: "Businesses", url: "/businesses", icon: Building2 },
   { title: "Crawl Jobs", url: "/jobs", icon: ListChecks },
+];
+
+const marketingItems = [
+  { title: "Messaging", url: "/marketing", icon: Megaphone },
+  { title: "Campaigns", url: "/marketing/campaigns", icon: Send },
 ];
 
 const dataItems = [
@@ -80,6 +87,30 @@ export function AppSidebar() {
               {mainItems.map((item) => (
                 <SidebarMenuItem key={item.url}>
                   <SidebarMenuButton asChild isActive={isActive(item.url)}>
+                    <Link to={item.url} className="flex items-center gap-2.5">
+                      <item.icon className="h-4 w-4" />
+                      {!collapsed && <span>{item.title}</span>}
+                    </Link>
+                  </SidebarMenuButton>
+                </SidebarMenuItem>
+              ))}
+            </SidebarMenu>
+          </SidebarGroupContent>
+        </SidebarGroup>
+
+        <SidebarGroup>
+          <SidebarGroupLabel>Marketing</SidebarGroupLabel>
+          <SidebarGroupContent>
+            <SidebarMenu>
+              {marketingItems.map((item) => (
+                <SidebarMenuItem key={item.url}>
+                  <SidebarMenuButton
+                    asChild
+                    // Exact match for the composer so it doesn't also light up on /marketing/campaigns.
+                    isActive={
+                      item.url === "/marketing" ? currentPath === "/marketing" : isActive(item.url)
+                    }
+                  >
                     <Link to={item.url} className="flex items-center gap-2.5">
                       <item.icon className="h-4 w-4" />
                       {!collapsed && <span>{item.title}</span>}
