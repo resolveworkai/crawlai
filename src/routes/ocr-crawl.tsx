@@ -14,6 +14,7 @@ import {
   useOcrJob,
   useOcrJobs,
   useOcrResults,
+  useRetryOcrJob,
 } from "@/hooks/useOcrCrawl";
 import { useGeocode } from "@/hooks/useGeocode";
 import { timeAgo } from "@/lib/utils";
@@ -22,6 +23,7 @@ import {
   Download,
   Loader2,
   MapPin,
+  RotateCcw,
   Search,
   Star,
   Trash2,
@@ -39,6 +41,10 @@ export const Route = createFileRoute("/ocr-crawl")({
   ),
 });
 
+// Must match backend/api/src/db/ocrJobs.ts's MAX_OCR_RETRIES — no shared-types package exists
+// yet to import this from a single source, so both sides carry the literal.
+const MAX_OCR_RETRIES = 3;
+const RETRYABLE: ReadonlySet<OcrJobStatus> = new Set(["failed", "blocked"]);
 const ACTIVE: ReadonlySet<OcrJobStatus> = new Set(["queued", "capturing", "ocr", "parsing"]);
 // Actually running a Chromium/Maps session — distinct from merely 'queued'. Only one job is ever
 // RUNNING at a time (server-enforced); any number may be 'queued' behind it and auto-run in turn.
@@ -123,10 +129,16 @@ function OcrCrawl() {
   const focusId = selectedId ?? runningJob?.id ?? jobs[0]?.id;
   const { data: detail } = useOcrJob(focusId);
   const focus = detail?.job;
-  const { data: results = [] } = useOcrResults(focusId, focus?.status === "ready");
+  // A failed/blocked job that still has captured businesses (from this or an earlier retry
+  // attempt) shows them too — resumable retry means "failed" no longer implies "nothing to show".
+  const hasPartialResults =
+    focus !== undefined && RETRYABLE.has(focus.status) && focus.captured_count > 0;
+  const showResults = focus?.status === "ready" || hasPartialResults;
+  const { data: results = [] } = useOcrResults(focusId, showResults);
 
   const createJob = useCreateOcrJob();
   const deleteJob = useDeleteOcrJob();
+  const retryJob = useRetryOcrJob();
 
   const sorted = useMemo(() => {
     const rows = [...results];
@@ -339,15 +351,22 @@ function OcrCrawl() {
               {focus.status === "blocked" && (
                 <p className="mt-1 flex items-center gap-1 text-xs text-warning">
                   <AlertTriangle className="h-3 w-3" /> Google served a verification wall — stopped
-                  safely. Try again later.
+                  safely. Retry resumes from the {focus.captured_count} businesses already captured.
                 </p>
               )}
               {focus.error_message && focus.status === "failed" && (
                 <p className="mt-1 text-xs text-destructive">{focus.error_message}</p>
               )}
+              {RETRYABLE.has(focus.status) && focus.retry_count > 0 && (
+                <p className="mt-1 text-[11px] text-muted-foreground">
+                  Retried {focus.retry_count}/{MAX_OCR_RETRIES}
+                  {focus.captured_count > 0 &&
+                    ` — ${focus.captured_count} businesses captured so far, kept across attempts`}
+                </p>
+              )}
             </div>
             <div className="flex shrink-0 items-center gap-1.5">
-              {focus.status === "ready" && (
+              {showResults && (
                 <>
                   <a href={ocrExportUrl(focus.id, "csv")} target="_blank" rel="noreferrer">
                     <Button variant="outline" size="sm" className="h-8 gap-1.5 border-border">
@@ -360,6 +379,33 @@ function OcrCrawl() {
                     </Button>
                   </a>
                 </>
+              )}
+              {RETRYABLE.has(focus.status) && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-8 gap-1.5 border-border"
+                  disabled={retryJob.isPending || focus.retry_count >= MAX_OCR_RETRIES}
+                  title={
+                    focus.retry_count >= MAX_OCR_RETRIES
+                      ? `Max retries (${MAX_OCR_RETRIES}) reached — the captured results are still available`
+                      : "Resume from the businesses already captured"
+                  }
+                  onClick={() =>
+                    retryJob.mutate(focus.id, {
+                      onSuccess: ({ queuePosition }) =>
+                        toast.success(
+                          queuePosition > 0
+                            ? `Retry queued behind ${queuePosition} job${queuePosition > 1 ? "s" : ""}`
+                            : "Retry launched",
+                        ),
+                      onError: (e) => toast.error(e.message),
+                    })
+                  }
+                >
+                  <RotateCcw className="h-3.5 w-3.5" />
+                  Retry{focus.retry_count > 0 ? ` (${focus.retry_count}/${MAX_OCR_RETRIES})` : ""}
+                </Button>
               )}
               <Button
                 variant="ghost"
@@ -377,7 +423,7 @@ function OcrCrawl() {
             </div>
           </div>
 
-          {focus.status === "ready" && (
+          {showResults && (
             <div className="mt-4 overflow-x-auto">
               <table className="w-full text-sm">
                 <thead>

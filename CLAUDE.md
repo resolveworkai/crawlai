@@ -166,6 +166,15 @@ on this status for a deploy decision.
   - **`OCR_CRAWL_MAX_RESULTS`/`ocr_max_results`**: the per-job result cap moved from a static env
     ceiling (200) to `crawl_settings.ocr_max_results` (DB-configurable, default 1000, Settings
     screen slider), enforced at request time via `getCrawlSettings()`.
+  - **Resumable retry (2026-07-26, `md/OCR_CRAWL.md`)**: `POST /ocr-crawl/jobs/:id/retry` (capped
+    at `MAX_OCR_RETRIES=3`) resumes a `failed`/`blocked` job from wherever it stopped — never from
+    zero. Reuses the SAME job row (no new id, no image relocation): `capture.py` now checkpoints
+    `manifest.json` after **every** capture (not just at run's end), `pipeline.py` reloads it on
+    claim and seeds the walk to skip already-captured hrefs (`_seed_from_resume`), and Stage B
+    skips indices already present in `ocr_businesses`. Partial results (whatever was captured
+    across all attempts) always stay viewable/exportable even if the job never reaches `ready` —
+    `/results`/`/export` never gated on status, and the UI's results table now also renders for a
+    failed/blocked job with `captured_count > 0`. New column: `ocr_jobs.retry_count`.
   Needs `tesseract-ocr` (apt in Dockerfile) + pytesseract/Pillow/opencv-headless. Retention purge
   of `raw/` PNGs, CAPTCHA→`blocked` stop.
   **⚠️ ToS: automating Maps violates it — low-volume/internal only; Places API is the compliant

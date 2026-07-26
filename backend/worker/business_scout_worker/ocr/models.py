@@ -38,6 +38,7 @@ class OcrJob(BaseModel):
     error_message: str | None
     current_business: str | None
     storage_dir: str | None
+    retry_count: int
     created_at: datetime
     started_at: datetime | None
     finished_at: datetime | None

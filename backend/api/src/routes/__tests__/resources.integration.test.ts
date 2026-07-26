@@ -294,12 +294,17 @@ describe("Crawl-OCR jobs", () => {
     createdOcrJobIds.push(allowed.body.job.id);
   });
 
-  it("enforces the single-flight lock with a 409", async () => {
-    // A job from the previous test is still 'queued' (worker not running in this test) → active.
+  it("queues rather than rejects a second job (only ACTIVE runs are single-flight)", async () => {
+    // A job from the previous test is still 'queued' (worker not running in this test) — the
+    // DB's single-flight guard only caps ACTUALLY RUNNING work (capturing/ocr/parsing), so a
+    // second 'queued' job is accepted and reports its position behind the first.
     const second = await operatorAgent
       .post("/ocr-crawl/jobs")
       .send({ query: "library", location: "Haldwani", maxResults: 5 });
-    expect(second.status).toBe(409);
+    expect(second.status).toBe(201);
+    expect(second.body.job.status).toBe("queued");
+    expect(second.body.queuePosition).toBeGreaterThanOrEqual(1);
+    createdOcrJobIds.push(second.body.job.id);
   });
 
   it("lists jobs and returns progress for one (any role)", async () => {

@@ -149,6 +149,8 @@ export interface OcrJob {
   // distinguishable from a hung job. Set by the worker on every item.
   current_business: string | null;
   storage_dir: string | null;
+  // Resumable retry (see hooks/useOcrCrawl.ts's useRetryOcrJob) — capped server-side at 3.
+  retry_count: number;
   created_at: string;
   started_at: string | null;
   finished_at: string | null;

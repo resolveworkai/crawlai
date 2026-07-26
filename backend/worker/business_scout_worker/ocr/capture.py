@@ -488,6 +488,49 @@ async def _expand_and_capture_hours(
         return None
 
 
+def _write_manifest_checkpoint(
+    job_dir: Path,
+    job_id: str,
+    query: str,
+    location: str,
+    started_at: str,
+    items: list[CapturedItem],
+    end_reason: OcrEndReason = "end_of_list",
+) -> None:
+    """Overwrites manifest.json with everything captured so far. Called after every successful
+    capture (not just once when the whole run finishes) — see the retry/resume design note on
+    CaptureEngine.run(). `end_reason` here is provisional (the walk isn't done yet); the final
+    write at the end of run() overwrites it with the real one."""
+    manifest = CaptureManifest(
+        job_id=job_id,
+        query=query,
+        location=location,
+        started_at=started_at,
+        end_reason=end_reason,
+        items=items,
+    )
+    (job_dir / "manifest.json").write_text(
+        json.dumps(manifest.model_dump(), indent=2), encoding="utf-8"
+    )
+
+
+def _seed_from_resume(
+    resume_items: list[CapturedItem] | None,
+) -> tuple[list[CapturedItem], dict[str, str]]:
+    """Pure helper for CaptureEngine.run()'s retry/resume path — split out so it's unit-testable
+    without a browser. `items` starts as everything already captured; `seen` is keyed the same
+    way the live walk loop keys it (place id, falling back to href then name) so those hrefs are
+    recognized and skipped rather than re-navigated when the walk resumes."""
+    items = list(resume_items) if resume_items else []
+    seen = {
+        ((_place_id_from_href(it.maps_url) if it.maps_url else None) or it.maps_url or it.name): (
+            it.name
+        )
+        for it in items
+    }
+    return items, seen
+
+
 class CaptureEngine:
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
@@ -506,17 +549,23 @@ class CaptureEngine:
         center_lng: float | None = None,
         radius_km: float | None = None,
         cell_radius_km: float = DEFAULT_CELL_RADIUS_KM,
+        resume_items: list[CapturedItem] | None = None,
         on_progress: ProgressCallback | None = None,
         should_stop: object = None,
     ) -> CaptureManifest:
+        """`resume_items` (a RETRY of a job that previously failed/blocked mid-capture) seeds
+        `items`/`seen` from the failed attempt's own on-disk manifest — those businesses are
+        never re-navigated or re-captured, only genuinely new ones are walked. See jobs.py's
+        retry handling and pipeline.py's manifest reload on claim."""
         raw_dir = job_dir / "raw"
         raw_dir.mkdir(parents=True, exist_ok=True)
         profile_dir = Path(self._settings.ocr_captures_dir) / ".profile"
         profile_dir.mkdir(parents=True, exist_ok=True)
 
-        items: list[CapturedItem] = []
-        seen: dict[str, str] = {}
+        items, seen = _seed_from_resume(resume_items)
         end_reason: OcrEndReason = "end_of_list"
+        if items:
+            logger.info("resuming from prior attempt", already_captured=len(items))
 
         # A radius large enough to need more than one cell is tiled into overlapping
         # sub-searches (generate_grid_cells) so nothing gets crowded out of a single broad
@@ -577,6 +626,8 @@ class CaptureEngine:
                         filter_center_lng=center_lng,
                         filter_radius_km=radius_km,
                         job_dir=job_dir,
+                        job_id=job_id,
+                        started_at=started_at,
                         on_progress=on_progress,
                         should_stop=should_stop,
                     )
@@ -594,7 +645,8 @@ class CaptureEngine:
                     "fuzzy dedup removed cross-cell duplicates", removed=before - len(items)
                 )
 
-        manifest = CaptureManifest(
+        _write_manifest_checkpoint(job_dir, job_id, query, location, started_at, items, end_reason)
+        return CaptureManifest(
             job_id=job_id,
             query=query,
             location=location,
@@ -602,10 +654,6 @@ class CaptureEngine:
             end_reason=end_reason,
             items=items,
         )
-        (job_dir / "manifest.json").write_text(
-            json.dumps(manifest.model_dump(), indent=2), encoding="utf-8"
-        )
-        return manifest
 
     async def _walk_area(
         self,
@@ -626,6 +674,8 @@ class CaptureEngine:
         filter_center_lng: float | None,
         filter_radius_km: float | None,
         job_dir: Path,
+        job_id: str,
+        started_at: str,
         on_progress: ProgressCallback | None,
         should_stop: object,
     ) -> OcrEndReason:
@@ -726,6 +776,11 @@ class CaptureEngine:
                     captured = None
                 if captured is not None:
                     items.append(captured)
+                    # Checkpoint to disk after EVERY successful capture (not just once at the
+                    # end) — this is what makes a retry after a mid-capture crash resumable: the
+                    # manifest on disk always reflects everything captured so far, never just what
+                    # existed at the last full run() completion. Cheap (a small local JSON write).
+                    _write_manifest_checkpoint(job_dir, job_id, query, location, started_at, items)
                     if on_progress is not None:
                         await on_progress(len(items), max_results, name)
                 # Between-business pacing. Kept randomized (never a fixed metronome interval —

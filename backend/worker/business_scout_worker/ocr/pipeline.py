@@ -24,7 +24,7 @@ from business_scout_worker.ocr.capture import (
     CaptureEngine,
     CaptureInterruptedError,
 )
-from business_scout_worker.ocr.models import CapturedItem, OcrJob
+from business_scout_worker.ocr.models import CapturedItem, CaptureManifest, OcrJob
 from business_scout_worker.ocr.ocr_engine import merge_segments
 from business_scout_worker.settings import Settings
 
@@ -42,6 +42,21 @@ async def run_ocr_job(
     try:
         job_dir.mkdir(parents=True, exist_ok=True)
         await ocr_jobs.set_ocr_storage_dir(pool, job.id, str(job.id))
+
+        # RETRY / RESUME: a manifest.json already on disk means a prior attempt on this exact
+        # job (same id — retry resets the existing row rather than creating a new one, see
+        # routes/ocrCrawl.ts) got partway through Stage A before failing/blocking. Reload what it
+        # already captured so those businesses are never re-navigated or re-captured — only
+        # genuinely new ones get walked. See capture.py's incremental checkpointing.
+        manifest_path = job_dir / "manifest.json"
+        resume_items: list[CapturedItem] = []
+        if manifest_path.exists():
+            try:
+                prior = CaptureManifest.model_validate_json(manifest_path.read_text("utf-8"))
+                resume_items = prior.items
+                log.info("resuming from prior manifest", already_captured=len(resume_items))
+            except Exception as exc:  # noqa: BLE001 - a corrupt manifest must not block a retry
+                log.warning("prior manifest unreadable, starting capture fresh", error=str(exc))
 
         # --- Stage A: capture ---
         log.info("ocr capture starting")
@@ -70,6 +85,7 @@ async def run_ocr_job(
             center_lat=job.center_lat,
             center_lng=job.center_lng,
             radius_km=job.radius_km,
+            resume_items=resume_items or None,
             on_progress=_on_progress,
             should_stop=(lambda: shutdown_event.is_set()) if shutdown_event is not None else None,
         )
@@ -86,8 +102,16 @@ async def run_ocr_job(
         # internally. This is orthogonal: running N single-threaded calls in parallel across
         # businesses is what actually uses multiple CPU cores for the batch.
         await ocr_jobs.set_ocr_status(pool, job.id, "ocr")
-        results_by_index: dict[int, dict[str, object]] = {}
-        ocr_done = 0
+        # RESUME: rows already in ocr_businesses (from a prior attempt on this same job — the
+        # resumed manifest items above) already have real OCR'd/parsed data. Re-running them would
+        # be safe (insert_ocr_business is idempotent) but wasteful — skip straight to the items
+        # that genuinely still need Stage B.
+        already_done = await ocr_jobs.get_ocr_done_indices(pool, job.id)
+        pending_items = [it for it in manifest.items if it.index not in already_done]
+        ocr_done = len(already_done)
+        if already_done:
+            log.info("skipping already-OCR'd items from prior attempt", count=len(already_done))
+            await ocr_jobs.set_ocr_counts(pool, job.id, ocr_done=ocr_done)
         done_lock = asyncio.Lock()
         sem = asyncio.Semaphore(settings.ocr_concurrency)
         interrupted = False
@@ -118,14 +142,13 @@ async def run_ocr_job(
                         distance_km=item.distance_km,
                     )
                     await ocr_jobs.insert_ocr_business(pool, job.id, parsed)
-                    results_by_index[item.index] = parsed.model_dump()
                 except Exception as exc:  # noqa: BLE001 - one bad image set must not abort the job
                     log.warning("ocr parse failed for item", name=item.name, error=str(exc))
                 async with done_lock:
                     ocr_done += 1
                     await ocr_jobs.set_ocr_counts(pool, job.id, ocr_done=ocr_done)
 
-        await asyncio.gather(*(_process_one(item) for item in manifest.items))
+        await asyncio.gather(*(_process_one(item) for item in pending_items))
 
         if interrupted:
             await ocr_jobs.finish_ocr_job(
@@ -138,9 +161,14 @@ async def run_ocr_job(
             log.info("ocr job interrupted mid-OCR — marked failed for relaunch")
             return
 
-        results = [results_by_index[i] for i in sorted(results_by_index)]
+        # Read back from the DB rather than accumulating this run's results in memory — on a
+        # resumed retry that's the only place the FULL set (prior attempt's rows + this run's new
+        # ones) exists together. default=str handles the UUID/datetime columns.
+        results = await ocr_jobs.list_ocr_business_rows(pool, job.id)
         await ocr_jobs.set_ocr_status(pool, job.id, "parsing")
-        (job_dir / "results.json").write_text(json.dumps(results, indent=2), encoding="utf-8")
+        (job_dir / "results.json").write_text(
+            json.dumps(results, indent=2, default=str), encoding="utf-8"
+        )
 
         await ocr_jobs.finish_ocr_job(pool, job.id, "ready", end_reason=manifest.end_reason)
         log.info("ocr job ready", rows=len(results))

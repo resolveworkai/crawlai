@@ -233,6 +233,7 @@ export interface OcrJob {
   error_message: string | null;
   current_business: string | null;
   storage_dir: string | null;
+  retry_count: number;
   created_at: Date;
   started_at: Date | null;
   finished_at: Date | null;

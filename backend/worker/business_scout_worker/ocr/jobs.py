@@ -7,6 +7,7 @@ capturing -> ocr -> parsing -> ready (or failed/blocked). The Node API only read
 
 from __future__ import annotations
 
+from typing import Any, cast
 from uuid import UUID
 
 from psycopg.types.json import Jsonb
@@ -143,6 +144,30 @@ async def insert_ocr_business(pool: AsyncConnectionPool, job_id: UUID, biz: Pars
                 "source_images": Jsonb(biz.source_images),
             },
         )
+
+
+async def get_ocr_done_indices(pool: AsyncConnectionPool, job_id: UUID) -> set[int]:
+    """Which `idx` values already have an ocr_businesses row for this job — from a PRIOR attempt
+    on a resumed retry. Stage B skips these entirely rather than re-OCRing already-good results
+    (insert_ocr_business's ON CONFLICT would make re-running them safe, just wasteful)."""
+    async with pool.connection() as conn:
+        cur = await conn.execute("SELECT idx FROM ocr_businesses WHERE job_id = %s", (str(job_id),))
+        rows = cast("list[dict[str, Any]]", await cur.fetchall())
+    return {row["idx"] for row in rows}
+
+
+async def list_ocr_business_rows(
+    pool: AsyncConnectionPool, job_id: UUID
+) -> list[dict[str, object]]:
+    """Every business row for this job, in capture order — used to (re)write results.json from
+    the DB (the actual source of truth) rather than only what THIS run's Stage B pass processed,
+    which on a resumed retry would be missing the earlier attempt's already-done rows."""
+    async with pool.connection() as conn:
+        cur = await conn.execute(
+            "SELECT * FROM ocr_businesses WHERE job_id = %s ORDER BY idx", (str(job_id),)
+        )
+        rows = cast("list[dict[str, Any]]", await cur.fetchall())
+    return [dict(row) for row in rows]
 
 
 async def get_ocr_job(pool: AsyncConnectionPool, job_id: UUID) -> OcrJob | None:

@@ -26,7 +26,9 @@ import {
   deleteOcrJob,
   findOcrJobById,
   listOcrJobs,
+  MAX_OCR_RETRIES,
   notifyOcrJobs,
+  retryOcrJob,
 } from "../db/ocrJobs.js";
 import { listOcrBusinesses } from "../db/ocrBusinesses.js";
 import { getCrawlSettings } from "../db/crawlSettings.js";
@@ -64,6 +66,39 @@ ocrCrawlRouter.post(
     });
     await notifyOcrJobs(job.id);
     res.status(201).json({ job, queuePosition: queuedAhead });
+  },
+);
+
+// Resumable retry: picks up from wherever the prior attempt left off (see pipeline.py's manifest
+// reload) rather than starting over. Capped at MAX_OCR_RETRIES — past that the job stays in its
+// terminal failed/blocked state, but whatever WAS captured across all attempts remains in
+// ocr_businesses and stays viewable/exportable (the /results and /export routes below don't gate
+// on job status).
+ocrCrawlRouter.post(
+  "/ocr-crawl/jobs/:id/retry",
+  requireAuth,
+  requireRole("operator"),
+  validate(ocrJobIdParamsSchema, "params"),
+  async (req, res) => {
+    const existing = await findOcrJobById(req.params.id as string);
+    if (!existing) throw new NotFoundError("OCR job not found");
+    if (existing.status !== "failed" && existing.status !== "blocked") {
+      throw new ValidationError(
+        `Only failed or blocked jobs can be retried (this job is ${existing.status})`,
+      );
+    }
+    if (existing.retry_count >= MAX_OCR_RETRIES) {
+      throw new ValidationError(
+        `Max retries (${MAX_OCR_RETRIES}) reached — the ${existing.captured_count} businesses already captured are still available to view/export`,
+      );
+    }
+    // Captured BEFORE the retry's own UPDATE flips this job to 'queued' too, so it reflects jobs
+    // genuinely ahead of it (same ordering as the create-job handler above).
+    const queuedAhead = await countQueuedOcrJobs();
+    const job = await retryOcrJob(existing.id);
+    if (!job) throw new ValidationError("Could not retry — the job's state changed, try again");
+    await notifyOcrJobs(job.id);
+    res.status(200).json({ job, queuePosition: queuedAhead });
   },
 );
 

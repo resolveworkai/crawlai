@@ -67,6 +67,29 @@ export async function findOcrJobById(id: string): Promise<OcrJob | null> {
   return rows[0] ?? null;
 }
 
+// Max 3 retries per job (mirrors the frontend's disabled-at-3 button and the error message
+// below — keep all three in sync if this ever changes).
+export const MAX_OCR_RETRIES = 3;
+
+// Resets a failed/blocked job back to 'queued' so the worker's claim loop picks it up again —
+// see business_scout_worker/ocr/pipeline.py's manifest-reload-on-claim, which is what makes this
+// an actual RESUME (skips already-captured businesses) rather than a plain restart. The WHERE
+// clause is the atomic guard: status must still be failed/blocked and under the retry cap, so two
+// concurrent retry clicks (or a retry racing a fresh worker pickup) can't double-increment or
+// resurrect an already-retried job. Returns null if that guard didn't hold — the caller
+// distinguishes "not found" vs "wrong state" vs "limit reached" by re-reading the row first.
+export async function retryOcrJob(id: string): Promise<OcrJob | null> {
+  const { rows } = await pool.query<OcrJob>(
+    `UPDATE ocr_jobs
+     SET status = 'queued', error_message = NULL, end_reason = NULL,
+         started_at = NULL, finished_at = NULL, retry_count = retry_count + 1
+     WHERE id = $1 AND status IN ('failed', 'blocked') AND retry_count < $2
+     RETURNING *`,
+    [id, MAX_OCR_RETRIES],
+  );
+  return rows[0] ?? null;
+}
+
 export async function deleteOcrJob(id: string): Promise<OcrJob | null> {
   // Returns the row (incl. storage_dir) so the caller can delete the on-disk job folder too;
   // ocr_businesses cascade-delete via the FK.

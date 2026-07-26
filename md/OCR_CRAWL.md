@@ -93,6 +93,28 @@ session) is still capped at one at a time (`ux_ocr_jobs_single_running`); any nu
 sit `queued` simultaneously. The create response includes `queuePosition` (jobs already queued
 ahead) so the UI can say "queued behind N" instead of silently accepting into a void.
 
+## Resumable retry — resumes from where it failed, not from zero
+
+A **Retry** button appears on `failed`/`blocked` jobs (`POST /ocr-crawl/jobs/:id/retry`, capped at
+`MAX_OCR_RETRIES = 3` — `db/ocrJobs.ts`). Retry reuses the **same job row** (same id, same
+`storage_dir`) rather than creating a new one, so nothing needs relocating:
+
+- **Capture checkpoints incrementally.** `_write_manifest_checkpoint()` (`capture.py`) overwrites
+  `manifest.json` after **every** successful capture, not just once when the whole run finishes —
+  so a crash mid-capture still leaves an accurate record of everything captured so far.
+- **On claim, the worker checks for a manifest already on disk.** `run_ocr_job()`
+  (`pipeline.py`) loads it if present and passes those items into `CaptureEngine.run()` as
+  `resume_items`, which seeds `items`/`seen` (`_seed_from_resume()`) — those businesses are never
+  re-navigated, only genuinely new ones get walked.
+- **Stage B skips indices already in `ocr_businesses`.** `get_ocr_done_indices()` — safe either
+  way (`insert_ocr_business` is `ON CONFLICT`-idempotent) but avoids redundant OCR work.
+- **`results.json` is rebuilt from the DB** (`list_ocr_business_rows()`) at the end, so it reflects
+  the union of every attempt, not just the last one's.
+- **Partial results always survive.** `/results` and `/export` don't gate on job status — a job
+  that hits the 3-retry cap and stays `failed` still has its captured businesses fully viewable
+  and exportable in the UI (the "No rows parsed" table only shows when `status==='ready'` OR
+  there's real `captured_count` on a failed/blocked job).
+
 ## ⚠️ Compliance
 
 Automating Google Maps with a browser **violates Google's Terms of Service**. Practical risk is
@@ -134,6 +156,7 @@ records an `end_reason` (`end_of_list` | `max_results` | `stagnation` | `blocked
 | `GET /api/ocr-crawl/jobs/:id/results` | parsed rows |
 | `GET /api/ocr-crawl/jobs/:id/export?format=csv\|xlsx` | download (xlsx via exceljs — never the vulnerable `xlsx` npm pkg) |
 | `GET /api/ocr-crawl/jobs/:id/images/*` | a captured screenshot (read-only, path-traversal-guarded, 404 after purge) |
+| `POST /api/ocr-crawl/jobs/:id/retry` | resumable retry of a `failed`/`blocked` job (capped at 3) → `{job, queuePosition}` |
 | `DELETE /api/ocr-crawl/jobs/:id` | remove rows + on-disk folder |
 
 ## OCR-readability core & performance

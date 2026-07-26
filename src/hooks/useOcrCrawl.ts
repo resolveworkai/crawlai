@@ -68,6 +68,20 @@ export function useCreateOcrJob() {
   });
 }
 
+// Resumable retry — the worker picks up from wherever the prior attempt left off (see
+// md/OCR_CRAWL.md's retry section), never from zero. Capped server-side at 3 (routes/ocrCrawl.ts).
+export function useRetryOcrJob() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) =>
+      api.post<{ job: OcrJob; queuePosition: number }>(`/ocr-crawl/jobs/${id}/retry`),
+    onSuccess: (_data, id) => {
+      void queryClient.invalidateQueries({ queryKey: ocrKeys.list() });
+      void queryClient.invalidateQueries({ queryKey: ocrKeys.detail(id) });
+    },
+  });
+}
+
 export function useDeleteOcrJob() {
   const queryClient = useQueryClient();
   return useMutation({
