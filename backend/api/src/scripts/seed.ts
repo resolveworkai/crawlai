@@ -222,6 +222,167 @@ const MARKETING_TEMPLATES: SeedTemplate[] = [
   },
   {
     channel: "whatsapp",
+    name: "Library — Stop double-booked seats",
+    subject: null,
+    businessType: "Library",
+    body:
+      "Hi {business_name}! Quick one about your study space in {city}. If seats get booked over the " +
+      "phone or on paper, it's easy for two students to end up promised the same seat — awkward at " +
+      "the door. Portal shows live seat availability and locks a seat the moment it's booked, even " +
+      "for full-day slots (so a morning booking can't quietly clash with an afternoon one). Free to " +
+      "get listed.\n\n" +
+      PORTAL_URL +
+      "\n\nReply STOP to opt out.",
+  },
+  {
+    channel: "email",
+    name: "Library — Stop double-booked seats",
+    subject: "Stop double-booked seats at {business_name}",
+    businessType: "Library",
+    body:
+      "<p>Hi {business_name} team,</p>" +
+      "<p>I came across your study space in {location} while researching libraries and study spaces nearby.</p>" +
+      "<p>When seats are booked by phone or written down on paper, it's easy for two students to end up " +
+      "promised the same seat — an awkward conversation at the door, and a bad first impression for " +
+      "someone new.</p>" +
+      "<p>Portal gives spaces like {business_name}:</p>" +
+      "<ul><li>Live seat availability, so a seat is locked the moment it's booked</li>" +
+      "<li>Safe full-day bookings — morning and afternoon slots are reserved together, so they can't silently conflict</li>" +
+      "<li>A public listing so new students searching nearby can find and book you</li></ul>" +
+      "<p>Free to get listed. Take a look:</p>" +
+      `<p><a href="${PORTAL_URL}">${PORTAL_URL}</a></p>` +
+      "<p>Reply to this email if you'd like a quick walkthrough.</p>" +
+      "<p>Best,<br/>The Team</p>",
+  },
+  {
+    channel: "whatsapp",
+    name: "Library — Get found by new students",
+    subject: null,
+    businessType: "Library",
+    body:
+      "Hi {business_name}! Came across your study space in {city}. If most of your students find you " +
+      "through word of mouth, you're likely missing the ones searching online right now. Portal gives " +
+      "you a public listing with real reviews, so students searching nearby can find {business_name} " +
+      "and book directly. Free to get listed.\n\n" +
+      PORTAL_URL +
+      "\n\nReply STOP to opt out.",
+  },
+  {
+    channel: "email",
+    name: "Library — Get found by new students",
+    subject: "Get {business_name} found by students searching nearby",
+    businessType: "Library",
+    body:
+      "<p>Hi {business_name} team,</p>" +
+      "<p>I came across your study space in {location} while researching libraries and study spaces nearby.</p>" +
+      "<p>If most of your students come through word of mouth, you're likely missing everyone who's " +
+      "searching online right now for a place to study near them.</p>" +
+      "<p>Portal gives spaces like {business_name}:</p>" +
+      "<ul><li>A public listing with real reviews, so new students can find and trust you</li>" +
+      "<li>Online booking, so a search turns straight into a booked seat</li>" +
+      "<li>Automatic reminders to cut down no-shows</li></ul>" +
+      "<p>Free to get listed. Take a look:</p>" +
+      `<p><a href="${PORTAL_URL}">${PORTAL_URL}</a></p>` +
+      "<p>Reply to this email if you'd like a quick walkthrough.</p>" +
+      "<p>Best,<br/>The Team</p>",
+  },
+  {
+    channel: "whatsapp",
+    name: "Library — Stop chasing renewals",
+    subject: null,
+    businessType: "Library",
+    body:
+      "Hi {business_name}! Noticed your study space in {city}. Tracking which member's pass is about " +
+      "to expire is easy to lose track of on paper — and a forgotten renewal is revenue that just " +
+      "quietly disappears. Portal sends automatic reminders before a pass expires, so members renew " +
+      "instead of drifting away unnoticed. Free to get started.\n\n" +
+      PORTAL_URL +
+      "\n\nReply STOP to opt out.",
+  },
+  {
+    channel: "email",
+    name: "Library — Stop chasing renewals",
+    subject: "Stop losing renewals at {business_name}",
+    businessType: "Library",
+    body:
+      "<p>Hi {business_name} team,</p>" +
+      "<p>I came across your study space in {location} while researching libraries and study spaces nearby.</p>" +
+      "<p>Tracking which member's pass is about to expire is easy to lose track of on paper — and a " +
+      "renewal nobody followed up on is revenue that just quietly disappears.</p>" +
+      "<p>Portal gives spaces like {business_name}:</p>" +
+      "<ul><li>Automatic reminders before a pass expires, so members renew instead of drifting away</li>" +
+      "<li>Daily, weekly, and monthly passes sold online, paid upfront</li>" +
+      "<li>A dashboard showing exactly who's active and who's about to lapse</li></ul>" +
+      "<p>Free to get started. Take a look:</p>" +
+      `<p><a href="${PORTAL_URL}">${PORTAL_URL}</a></p>` +
+      "<p>Reply to this email and I'll send more details.</p>" +
+      "<p>Best,<br/>The Team</p>",
+  },
+  {
+    channel: "whatsapp",
+    name: "Library — See your busiest hours",
+    subject: null,
+    businessType: "Library",
+    body:
+      "Hi {business_name}! Spotted your study space in {city}. Without an easy way to see which hours " +
+      "are busiest or what you're actually making each month, it's hard to plan staffing or pricing. " +
+      "Portal gives you a dashboard showing bookings, revenue, and member trends at a glance. Free to " +
+      "get listed.\n\n" +
+      PORTAL_URL +
+      "\n\nReply STOP to opt out.",
+  },
+  {
+    channel: "email",
+    name: "Library — See your busiest hours",
+    subject: "See {business_name}'s busiest hours and real revenue",
+    businessType: "Library",
+    body:
+      "<p>Hi {business_name} team,</p>" +
+      "<p>I came across your study space in {location} while researching libraries and study spaces nearby.</p>" +
+      "<p>Without an easy way to see which hours are actually busiest or what you're making month to " +
+      "month, it's hard to plan staffing, pricing, or when to open extra seats.</p>" +
+      "<p>Portal gives spaces like {business_name}:</p>" +
+      "<ul><li>A dashboard showing bookings, revenue, and member trends at a glance</li>" +
+      "<li>Online seat booking by time slot, so demand is visible in real time</li>" +
+      "<li>A public listing so new students searching nearby can find and book you</li></ul>" +
+      "<p>Free to get listed. Take a look:</p>" +
+      `<p><a href="${PORTAL_URL}">${PORTAL_URL}</a></p>` +
+      "<p>Reply to this email if you'd like a quick walkthrough.</p>" +
+      "<p>Best,<br/>The Team</p>",
+  },
+  {
+    channel: "whatsapp",
+    name: "Library — Cut down walk-in queues",
+    subject: null,
+    businessType: "Library",
+    body:
+      "Hi {business_name}! Came across your study space in {city}. A line at the desk to check seat " +
+      "availability or pay costs you time, especially during exam season. Portal lets students check " +
+      "live availability and book/pay from their phone before they even arrive. Free to get listed.\n\n" +
+      PORTAL_URL +
+      "\n\nReply STOP to opt out.",
+  },
+  {
+    channel: "email",
+    name: "Library — Cut down walk-in queues",
+    subject: "Cut the front-desk queue at {business_name}",
+    businessType: "Library",
+    body:
+      "<p>Hi {business_name} team,</p>" +
+      "<p>I came across your study space in {location} while researching libraries and study spaces nearby.</p>" +
+      "<p>A line at the desk just to check seat availability or pay costs everyone time — especially " +
+      "during exam season when every seat matters.</p>" +
+      "<p>Portal gives spaces like {business_name}:</p>" +
+      "<ul><li>Live seat availability and booking students can check from their phone before they arrive</li>" +
+      "<li>Online payment, so there's nothing to handle at the desk</li>" +
+      "<li>Automatic reminders to cut down no-shows</li></ul>" +
+      "<p>Free to get listed. Take a look:</p>" +
+      `<p><a href="${PORTAL_URL}">${PORTAL_URL}</a></p>` +
+      "<p>Reply to this email and I'll send more details.</p>" +
+      "<p>Best,<br/>The Team</p>",
+  },
+  {
+    channel: "whatsapp",
     name: "Coaching — Fill your sessions",
     subject: null,
     businessType: "Coaching",

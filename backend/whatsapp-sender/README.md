@@ -24,6 +24,11 @@ to eliminate that risk — only reduce it:
 
 ## One-time setup
 
+⚠️ Every command below must be run **from this directory** (`backend/whatsapp-sender`), not
+`backend/` or the repo root — `npm run <script>` only sees scripts defined in the closest
+`package.json` **above** your current directory; run it from the wrong folder and npm silently picks
+up a different project's scripts instead of failing loudly.
+
 ```bash
 cd backend/whatsapp-sender
 npm install
@@ -73,6 +78,20 @@ Then open the campaign in the Marketing UI and click **⚡ Start Automated Send*
 reports the agent isn't reachable, this command isn't running — start it first. The agent also
 exposes `POST /test-send` (same trial-send capability as `npm run test-send`, for a "Send test"
 button in the UI).
+
+**Run both the backend API and the agent together** (local, non-Docker dev only — see below):
+
+```bash
+npm run dev:with-backend
+```
+
+This starts `backend/api`'s `npm run dev` and this package's `npm run agent` side by side (via
+`concurrently`), so you don't have to open two terminals. **Only for local dev** — the deployed
+Docker backend can never run this: a Docker container has no visible desktop for the WhatsApp Web
+QR-scan/browser session, and the agent is deliberately never added to `docker-compose.yml` (see the
+"⚠️ Read this before running it" section above). If your backend is running via `docker compose up`,
+just start `npm run agent` here separately — it talks to the backend over HTTP either way, container
+or not.
 
 ## Guardrails (env vars — see `.env.example`)
 
