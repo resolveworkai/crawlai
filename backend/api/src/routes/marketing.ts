@@ -11,14 +11,18 @@ import {
   addTemplateImageSchema,
   campaignRecipientParamsSchema,
   createCampaignSchema,
+  createContactSchema,
   createTemplateSchema,
   idParamsSchema,
+  markFailedSchema,
   recipientSourceSchema,
   suppressionSchema,
   testEmailSchema,
+  updateContactSchema,
   updateEmailCredentialsSchema,
   updateTemplateSchema,
   type CreateCampaignInput,
+  type CreateContactInput,
   type CreateTemplateInput,
   type RecipientSourceInput,
   type UpdateEmailCredentialsInput,
@@ -28,6 +32,8 @@ import { isEncryptionAvailable } from "../lib/messagingCrypto.js";
 import {
   buildRecipientsFromOcrJobs,
   dedupeRecipients,
+  normalizeEmail,
+  normalizePhone,
   parseUploadedRecipients,
   type Recipient,
 } from "../lib/recipientParse.js";
@@ -35,6 +41,12 @@ import {
   getPublicEmailCredentials,
   updateEmailCredentials,
 } from "../db/messagingCredentials.js";
+import {
+  createContact,
+  deleteContact,
+  listContacts,
+  updateContact,
+} from "../db/marketingContacts.js";
 import {
   addTemplateImage,
   createTemplate,
@@ -59,6 +71,7 @@ import {
 } from "../db/emailSuppressions.js";
 import { runEmailCampaign, sendTestEmail } from "../services/emailService.js";
 import { buildVcard, buildWaLink } from "../services/whatsappService.js";
+import { buildCampaignExport } from "../services/campaignExportService.js";
 import { verifyUnsubscribeToken } from "../lib/unsubscribeToken.js";
 
 export const marketingRouter = Router();
@@ -71,6 +84,19 @@ async function resolveRecipients(source: RecipientSourceInput): Promise<Recipien
   }
   if (source.upload) {
     parts.push(...(await parseUploadedRecipients(source.upload.base64, source.upload.filename)));
+  }
+  if (source.contactIds?.length) {
+    const wanted = new Set(source.contactIds);
+    const contacts = (await listContacts()).filter((c) => wanted.has(c.id));
+    parts.push(
+      ...contacts.map((c) => ({
+        businessName: c.business_name,
+        businessType: c.business_type,
+        location: c.location,
+        phone: c.phone,
+        email: c.email,
+      })),
+    );
   }
   return dedupeRecipients(parts);
 }
@@ -145,6 +171,7 @@ marketingRouter.post(
       name: input.name,
       subject: input.subject ?? null,
       body: input.body,
+      businessType: input.businessType ?? null,
       createdBy: req.user!.id,
     });
     res.status(201).json({ template });
@@ -184,11 +211,12 @@ marketingRouter.post(
   async (req, res) => {
     const template = await findTemplateById(req.params.id as string);
     if (!template) throw new NotFoundError("Template not found");
-    const { cid, filename, mime, base64 } = req.body as {
+    const { cid, filename, mime, base64, isInline } = req.body as {
       cid: string;
       filename: string;
       mime: string;
       base64: string;
+      isInline: boolean;
     };
     const image = await addTemplateImage({
       templateId: template.id,
@@ -196,6 +224,7 @@ marketingRouter.post(
       filename,
       mime,
       bytes: Buffer.from(base64, "base64"),
+      isInline,
     });
     res.status(201).json({ image });
   },
@@ -209,8 +238,72 @@ marketingRouter.get(
     const images = await listTemplateImages(req.params.id as string);
     // Never ship raw bytes in JSON — metadata only (the send path reads bytes server-side).
     res.json({
-      images: images.map((i) => ({ id: i.id, cid: i.cid, filename: i.filename, mime: i.mime })),
+      images: images.map((i) => ({
+        id: i.id,
+        cid: i.cid,
+        filename: i.filename,
+        mime: i.mime,
+        isInline: i.is_inline,
+      })),
     });
+  },
+);
+
+// --- contacts (manually-added, reusable across campaigns) ---
+marketingRouter.get("/marketing/contacts", requireAuth, async (_req, res) => {
+  res.json({ contacts: await listContacts() });
+});
+
+marketingRouter.post(
+  "/marketing/contacts",
+  requireAuth,
+  requireRole("operator"),
+  validate(createContactSchema),
+  async (req, res) => {
+    const input = req.body as CreateContactInput;
+    const contact = await createContact({
+      businessName: input.businessName,
+      businessType: input.businessType ?? null,
+      location: input.location ?? null,
+      phone: normalizePhone(input.phone),
+      email: normalizeEmail(input.email),
+      createdBy: req.user!.id,
+    });
+    res.status(201).json({ contact });
+  },
+);
+
+marketingRouter.patch(
+  "/marketing/contacts/:id",
+  requireAuth,
+  requireRole("operator"),
+  validate(idParamsSchema, "params"),
+  validate(updateContactSchema),
+  async (req, res) => {
+    const body = req.body as {
+      businessName?: string;
+      businessType?: string | null;
+      location?: string | null;
+      phone?: string | null;
+      email?: string | null;
+    };
+    const patch: Parameters<typeof updateContact>[1] = { ...body };
+    if (body.phone !== undefined) patch.phone = normalizePhone(body.phone);
+    if (body.email !== undefined) patch.email = normalizeEmail(body.email);
+    const contact = await updateContact(req.params.id as string, patch);
+    if (!contact) throw new NotFoundError("Contact not found");
+    res.json({ contact });
+  },
+);
+
+marketingRouter.delete(
+  "/marketing/contacts/:id",
+  requireAuth,
+  requireRole("operator"),
+  validate(idParamsSchema, "params"),
+  async (req, res) => {
+    if (!(await deleteContact(req.params.id as string))) throw new NotFoundError("Contact not found");
+    res.status(204).send();
   },
 );
 
@@ -298,6 +391,21 @@ marketingRouter.get(
   },
 );
 
+// One Excel report per campaign — every recipient + outcome (Summary/Recipients/Failed-only sheets),
+// for either channel. Available at any point (draft/sending/completed) so a partial run can still be
+// reviewed mid-flight.
+marketingRouter.get(
+  "/marketing/campaigns/:id/export",
+  requireAuth,
+  validate(idParamsSchema, "params"),
+  async (req, res) => {
+    const file = await buildCampaignExport(req.params.id as string);
+    res.setHeader("Content-Type", file.contentType);
+    res.setHeader("Content-Disposition", `attachment; filename="${file.filename}"`);
+    res.send(file.buffer);
+  },
+);
+
 // WhatsApp: the frontend marks a recipient 'sent' after the operator clicks its wa.me link (we
 // can't confirm real delivery for click-to-chat).
 marketingRouter.post(
@@ -307,6 +415,23 @@ marketingRouter.post(
   validate(campaignRecipientParamsSchema, "params"),
   async (req, res) => {
     const recipient = await setRecipientStatus(req.params.rid as string, "sent");
+    if (!recipient || recipient.campaign_id !== req.params.id) throw new NotFoundError("Recipient not found");
+    const campaign = await refreshCampaignCounts(req.params.id as string);
+    res.json({ recipient, campaign });
+  },
+);
+
+// WhatsApp: mirrors mark-sent — used by the automation agent (backend/whatsapp-sender) to record a
+// send that failed (chat never loaded, invalid number, etc.) instead of leaving it stuck 'pending'.
+marketingRouter.post(
+  "/marketing/campaigns/:id/recipients/:rid/mark-failed",
+  requireAuth,
+  requireRole("operator"),
+  validate(campaignRecipientParamsSchema, "params"),
+  validate(markFailedSchema),
+  async (req, res) => {
+    const { error } = req.body as { error?: string };
+    const recipient = await setRecipientStatus(req.params.rid as string, "failed", error ?? null);
     if (!recipient || recipient.campaign_id !== req.params.id) throw new NotFoundError("Recipient not found");
     const campaign = await refreshCampaignCounts(req.params.id as string);
     res.json({ recipient, campaign });

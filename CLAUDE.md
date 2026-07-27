@@ -219,6 +219,38 @@ on this status for a deploy decision.
   Backend `routes/marketing.ts`; frontend `routes/marketing.tsx` + `hooks/useMarketing.ts`.
   ⚠️ Same cold-outreach ToS/legal posture as the Maps scraping — compliance guardrails are the
   responsible-use minimum; volume stays low/manual.
+- **Marketing v2 (2026-07-27, `md/MARKETING.md`)**: Contacts (`marketing_contacts` — manually-added
+  reusable recipients via a "+ Add business" form, merged into recipient preview by `contactIds`);
+  curated business-type-aware templates (nullable `message_templates.business_type`, seeded via
+  upsert in `scripts/seed.ts` so content edits actually apply on re-run — every message links
+  `https://portal.c7corp.com` as a plain URL for link-preview unfurling); email attachments beyond
+  inline images (`message_template_images.is_inline` — false = a plain `Content-Disposition:
+  attachment`, e.g. a PDF); per-campaign Excel report + in-app Failed panel
+  (`services/campaignExportService.ts`, `GET /marketing/campaigns/:id/export` — Summary/Recipients/
+  Failed-only sheets). **`backend/whatsapp-sender/`** — a new local-only third package (sibling to
+  `backend/api`/`backend/worker`, never in `docker-compose.yml`) drives the operator's own WhatsApp
+  Web session via a visible Playwright browser for real automated bulk send, built after the
+  operator explicitly re-confirmed wanting true automation despite the ToS/ban-risk v1 had
+  deliberately avoided. Guardrails: randomized inter-send delay + a persisted daily cap
+  (`rateLimiter.ts`), a `npm run test-send` trial-send step (default `+919560397112`) required before
+  ever touching real leads, and a risk-acknowledgment confirm dialog on the frontend's **⚡ Start
+  Automated Send** button (`hooks/useWhatsappAgent.ts`, talks directly to the local
+  `127.0.0.1:8787` agent — a different process from the main backend; "not detected" is the expected
+  default state). Migration `1784900000000` adds `marketing_contacts` +
+  `message_templates.business_type` + `message_template_images.is_inline`. `normalizePhone` now
+  infers `+91` for a bare 10-digit Indian mobile number (found live-verifying v1 — the same business
+  listed with vs. without a country code was surviving dedup as two recipients).
+- **Backend HTTP keep-alive fix (2026-07-27, `server.ts`)**: intermittent `ECONNRESET`/recv-failure
+  on requests from both curl and the real browser UI, with **no** matching log line on the backend
+  (the request never reached Express) — root cause was Node's default `keepAliveTimeout` (5s) racing
+  against any client that reuses a connection across requests (every browser, and curl within a
+  session); Docker Desktop's Windows/WSL2 network translation adds enough latency to make this race
+  hit often in practice. Fixed by explicitly setting `server.keepAliveTimeout = 65_000` and
+  `server.headersTimeout = 66_000` (must stay greater) on the `http.Server` returned by
+  `app.listen()`. Verified live: 6 rapid sequential POSTs succeeded, and a POST → 7s wait (past the
+  old 5s default) → POST again on the same connection both returned 201. If this exact symptom
+  reappears (connection reset, zero backend log line for that request), check this setting first
+  before assuming an application bug.
 - **Known follow-up, not yet done**: `supabase/` (CLI config + old Lovable-era migrations) is dead
   weight left over from the original scaffold — the real schema is `db/migrations/*.sql` via
   node-pg-migrate. Safe to delete, just hasn't been done. Prod deployment target (which host, TLS

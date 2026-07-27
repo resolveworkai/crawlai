@@ -75,17 +75,24 @@ export interface RenderedEmail {
   html: string;
   replyTo?: string;
   headers: Record<string, string>;
-  attachments: { filename: string; content: Buffer; contentType: string; cid: string }[];
+  attachments: {
+    filename: string;
+    content: Buffer;
+    contentType: string;
+    cid?: string;
+    contentDisposition: "inline" | "attachment";
+  }[];
 }
 
 // Pure-ish render (no network) — testable with nodemailer's jsonTransport. Substitutes placeholders,
-// appends the compliance footer, and wires inline images as cid attachments.
+// appends the compliance footer, and wires images: isInline ones as cid-referenced inline images
+// (renders inside the HTML body), the rest as plain attachments (e.g. a PDF brochure).
 export function renderEmail(
   smtp: SmtpConfig,
   recipient: Recipient,
   subject: string,
   body: string,
-  images: { cid: string; filename: string; mime: string; bytes: Buffer }[],
+  images: { cid: string; filename: string; mime: string; bytes: Buffer; isInline: boolean }[],
 ): RenderedEmail {
   const values = recipientToPlaceholders(recipient);
   const to = recipient.email!;
@@ -101,7 +108,8 @@ export function renderEmail(
       filename: img.filename,
       content: img.bytes,
       contentType: img.mime,
-      cid: img.cid,
+      ...(img.isInline ? { cid: img.cid } : {}),
+      contentDisposition: img.isInline ? "inline" : "attachment",
     })),
   };
   if (smtp.replyTo) result.replyTo = smtp.replyTo;
@@ -163,7 +171,15 @@ export async function runEmailCampaign(
   }
 
   const transport = await buildTransport(smtp);
-  const images = campaign.template_id ? await listTemplateImages(campaign.template_id) : [];
+  const images = campaign.template_id
+    ? (await listTemplateImages(campaign.template_id)).map((img) => ({
+        cid: img.cid,
+        filename: img.filename,
+        mime: img.mime,
+        bytes: img.bytes,
+        isInline: img.is_inline,
+      }))
+    : [];
   const suppressed = await getSuppressedSet();
   const recipients = (await listCampaignRecipients(campaignId)).filter(
     (r) => r.status === "pending" || r.status === "failed",

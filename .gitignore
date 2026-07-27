@@ -37,6 +37,11 @@ dist-ssr
 .env.*.local
 !.env.example
 
+# backend/whatsapp-sender — persistent WhatsApp Web browser profile (real login session, never
+# committed) + local rate-limit/daily-cap state
+backend/whatsapp-sender/.whatsapp-sender-profile/
+backend/whatsapp-sender/.whatsapp-sender-state.json
+
 # Python
 __pycache__/
 *.py[cod]

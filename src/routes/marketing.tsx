@@ -18,21 +18,52 @@ import {
 import { RequireAuth } from "@/components/require-auth";
 import { useOcrJobs } from "@/hooks/useOcrCrawl";
 import {
+  campaignExportUrl,
   campaignVcardUrl,
+  useAddTemplateImage,
   useCampaign,
+  useContacts,
   useCreateCampaign,
+  useCreateContact,
   useEmailCredentials,
   useMarkRecipientSent,
   usePreviewRecipients,
   useSaveEmailCredentials,
   useSendCampaign,
+  useTemplateImages,
   useTemplates,
   useTestEmail,
   type RecipientSource,
 } from "@/hooks/useMarketing";
-import type { MarketingRecipient, MessageChannel } from "@/types/api";
+import {
+  useAgentStatus,
+  useAgentTestSend,
+  useStartAutomatedSend,
+  useStopAutomatedSend,
+} from "@/hooks/useWhatsappAgent";
+import type {
+  CampaignRecipient,
+  MarketingRecipient,
+  MessageChannel,
+  MessageTemplate,
+} from "@/types/api";
 import { toast } from "sonner";
-import { AlertTriangle, Contact, Download, Mail, MessageCircle, Send, Upload } from "lucide-react";
+import {
+  AlertTriangle,
+  Contact,
+  Download,
+  FileSpreadsheet,
+  FileText,
+  Image as ImageIcon,
+  Mail,
+  MessageCircle,
+  Paperclip,
+  Plus,
+  Send,
+  Square,
+  Upload,
+  Zap,
+} from "lucide-react";
 
 export const Route = createFileRoute("/marketing")({
   component: () => (
@@ -52,6 +83,26 @@ function renderPreview(text: string, r: MarketingRecipient | undefined): string 
     .replace(/\{business_type\}/g, r.businessType ?? "")
     .replace(/\{location\}/g, r.location ?? "")
     .replace(/\{city\}/g, city);
+}
+
+// Most-common businessType among the loaded recipients — used to recommend a matching template
+// first (case-insensitive; OCR/CSV business types are free text, not a fixed enum).
+function dominantBusinessType(recipients: MarketingRecipient[]): string | null {
+  const counts = new Map<string, number>();
+  for (const r of recipients) {
+    if (!r.businessType) continue;
+    const key = r.businessType.trim().toLowerCase();
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+  let best: string | null = null;
+  let bestCount = 0;
+  for (const [key, count] of counts) {
+    if (count > bestCount) {
+      best = key;
+      bestCount = count;
+    }
+  }
+  return best;
 }
 
 function Marketing() {
@@ -86,13 +137,19 @@ function ChannelComposer({ channel }: { channel: MessageChannel }) {
   const [recipients, setRecipients] = useState<MarketingRecipient[]>([]);
   const [subject, setSubject] = useState("");
   const [body, setBody] = useState("");
+  const [selectedTemplateId, setSelectedTemplateId] = useState<string | undefined>(undefined);
   const [campaignId, setCampaignId] = useState<string | undefined>(undefined);
 
   const preview = recipients[0];
 
   return (
     <div className="grid gap-4 lg:grid-cols-2">
-      <RecipientStep channel={channel} onLoaded={setRecipients} recipients={recipients} />
+      <RecipientStep
+        channel={channel}
+        onLoaded={setRecipients}
+        recipients={recipients}
+        onAddOne={(r) => setRecipients((prev) => [...prev, r])}
+      />
       <MessageStep
         channel={channel}
         subject={subject}
@@ -100,6 +157,9 @@ function ChannelComposer({ channel }: { channel: MessageChannel }) {
         setSubject={setSubject}
         setBody={setBody}
         previewRecipient={preview}
+        recommendedType={dominantBusinessType(recipients)}
+        selectedTemplateId={selectedTemplateId}
+        setSelectedTemplateId={setSelectedTemplateId}
       />
       {channel === "email" && <EmailCredsCard />}
       <SendStep
@@ -107,6 +167,7 @@ function ChannelComposer({ channel }: { channel: MessageChannel }) {
         recipients={recipients}
         subject={subject}
         body={body}
+        templateId={selectedTemplateId}
         campaignId={campaignId}
         setCampaignId={setCampaignId}
       />
@@ -119,14 +180,18 @@ function RecipientStep({
   channel,
   recipients,
   onLoaded,
+  onAddOne,
 }: {
   channel: MessageChannel;
   recipients: MarketingRecipient[];
   onLoaded: (r: MarketingRecipient[]) => void;
+  onAddOne: (r: MarketingRecipient) => void;
 }) {
   const { data: ocrJobs = [] } = useOcrJobs();
   const readyJobs = ocrJobs.filter((j) => j.status === "ready");
+  const { data: contacts = [] } = useContacts();
   const [selectedJobs, setSelectedJobs] = useState<string[]>([]);
+  const [selectedContacts, setSelectedContacts] = useState<string[]>([]);
   const [upload, setUpload] = useState<{ filename: string; base64: string } | undefined>();
   const previewMut = usePreviewRecipients();
   const fileRef = useRef<HTMLInputElement>(null);
@@ -146,8 +211,9 @@ function RecipientStep({
     const source: RecipientSource = {};
     if (upload) source.upload = upload;
     if (selectedJobs.length) source.ocrJobIds = selectedJobs;
-    if (!source.upload && !source.ocrJobIds) {
-      toast.error("Upload a file or pick an OCR job first");
+    if (selectedContacts.length) source.contactIds = selectedContacts;
+    if (!source.upload && !source.ocrJobIds && !source.contactIds) {
+      toast.error("Upload a file, pick an OCR job, or pick a saved contact first");
       return;
     }
     previewMut.mutate(source, {
@@ -220,9 +286,41 @@ function RecipientStep({
           </div>
         </div>
 
+        <div>
+          <label className="text-xs text-muted-foreground">…and/or pick saved contacts</label>
+          <div className="mt-1 max-h-32 space-y-1 overflow-y-auto rounded border border-border p-2">
+            {contacts.length === 0 && (
+              <p className="text-[11px] text-muted-foreground">
+                No saved contacts yet — add one below.
+              </p>
+            )}
+            {contacts.map((c) => (
+              <label key={c.id} className="flex items-center gap-2 text-xs">
+                <input
+                  type="checkbox"
+                  checked={selectedContacts.includes(c.id)}
+                  onChange={(e) =>
+                    setSelectedContacts((prev) =>
+                      e.target.checked ? [...prev, c.id] : prev.filter((x) => x !== c.id),
+                    )
+                  }
+                />
+                <span className="truncate">
+                  {c.business_name}
+                  {c.business_type && (
+                    <span className="text-muted-foreground"> · {c.business_type}</span>
+                  )}
+                </span>
+              </label>
+            ))}
+          </div>
+        </div>
+
         <Button size="sm" disabled={previewMut.isPending} onClick={load} className="gap-1.5">
           <Contact className="h-3.5 w-3.5" /> Load recipients
         </Button>
+
+        <AddContactForm onAdded={onAddOne} />
       </div>
 
       {recipients.length > 0 && (
@@ -261,6 +359,108 @@ function RecipientStep({
   );
 }
 
+// Quick "type in a business you already know" form — saves it to the reusable Contacts list
+// (server normalizes phone/email) and immediately merges it into the current draft.
+function AddContactForm({ onAdded }: { onAdded: (r: MarketingRecipient) => void }) {
+  const [open, setOpen] = useState(false);
+  const [form, setForm] = useState({
+    businessName: "",
+    businessType: "",
+    location: "",
+    phone: "",
+    email: "",
+  });
+  const create = useCreateContact();
+
+  const set = (k: keyof typeof form, v: string) => setForm((f) => ({ ...f, [k]: v }));
+
+  function submit() {
+    if (!form.businessName.trim()) return toast.error("Business name is required");
+    create.mutate(
+      {
+        businessName: form.businessName.trim(),
+        businessType: form.businessType.trim() || null,
+        location: form.location.trim() || null,
+        phone: form.phone.trim() || null,
+        email: form.email.trim() || null,
+      },
+      {
+        onSuccess: ({ contact }) => {
+          onAdded({
+            businessName: contact.business_name,
+            businessType: contact.business_type,
+            location: contact.location,
+            phone: contact.phone,
+            email: contact.email,
+          });
+          toast.success(`Added ${contact.business_name}`);
+          setForm({ businessName: "", businessType: "", location: "", phone: "", email: "" });
+          setOpen(false);
+        },
+        onError: (e) => toast.error(e.message),
+      },
+    );
+  }
+
+  if (!open) {
+    return (
+      <Button
+        variant="ghost"
+        size="sm"
+        className="h-8 gap-1.5 text-xs"
+        onClick={() => setOpen(true)}
+      >
+        <Plus className="h-3.5 w-3.5" /> Add a business manually
+      </Button>
+    );
+  }
+
+  return (
+    <div className="space-y-2 rounded border border-border p-2">
+      <div className="grid grid-cols-2 gap-1.5">
+        <Input
+          placeholder="Business name *"
+          value={form.businessName}
+          onChange={(e) => set("businessName", e.target.value)}
+          className="h-8 bg-input text-xs"
+        />
+        <Input
+          placeholder="Type (e.g. Gym)"
+          value={form.businessType}
+          onChange={(e) => set("businessType", e.target.value)}
+          className="h-8 bg-input text-xs"
+        />
+        <Input
+          placeholder="Location"
+          value={form.location}
+          onChange={(e) => set("location", e.target.value)}
+          className="h-8 bg-input text-xs"
+        />
+        <Input
+          placeholder="Phone"
+          value={form.phone}
+          onChange={(e) => set("phone", e.target.value)}
+          className="h-8 bg-input text-xs"
+        />
+        <Input
+          placeholder="Email"
+          value={form.email}
+          onChange={(e) => set("email", e.target.value)}
+          className="col-span-2 h-8 bg-input text-xs"
+        />
+      </div>
+      <div className="flex gap-1.5">
+        <Button size="sm" className="h-7 text-xs" disabled={create.isPending} onClick={submit}>
+          Save &amp; add to draft
+        </Button>
+        <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={() => setOpen(false)}>
+          Cancel
+        </Button>
+      </div>
+    </div>
+  );
+}
+
 // --- Step 2: message ---
 function MessageStep({
   channel,
@@ -269,6 +469,9 @@ function MessageStep({
   setSubject,
   setBody,
   previewRecipient,
+  recommendedType,
+  selectedTemplateId,
+  setSelectedTemplateId,
 }: {
   channel: MessageChannel;
   subject: string;
@@ -276,9 +479,17 @@ function MessageStep({
   setSubject: (v: string) => void;
   setBody: (v: string) => void;
   previewRecipient: MarketingRecipient | undefined;
+  recommendedType: string | null;
+  selectedTemplateId: string | undefined;
+  setSelectedTemplateId: (id: string | undefined) => void;
 }) {
   const { data: templates = [] } = useTemplates(channel);
   const bodyRef = useRef<HTMLTextAreaElement>(null);
+
+  const recommended = recommendedType
+    ? templates.filter((t) => t.business_type?.toLowerCase() === recommendedType)
+    : [];
+  const other = templates.filter((t) => !recommended.includes(t));
 
   function insert(token: string) {
     const el = bodyRef.current;
@@ -287,6 +498,12 @@ function MessageStep({
     const start = el.selectionStart;
     const end = el.selectionEnd;
     setBody(body.slice(0, start) + t + body.slice(end));
+  }
+
+  function applyTemplate(t: MessageTemplate) {
+    setBody(t.body);
+    if (t.subject) setSubject(t.subject);
+    setSelectedTemplateId(t.id);
   }
 
   return (
@@ -303,21 +520,31 @@ function MessageStep({
         {templates.length > 0 && (
           <select
             className="h-9 w-full rounded-md border border-border bg-input px-2 text-sm"
-            defaultValue=""
+            value={selectedTemplateId ?? ""}
             onChange={(e) => {
               const t = templates.find((x) => x.id === e.target.value);
-              if (t) {
-                setBody(t.body);
-                if (t.subject) setSubject(t.subject);
-              }
+              if (t) applyTemplate(t);
+              else setSelectedTemplateId(undefined);
             }}
           >
             <option value="">Load a saved template…</option>
-            {templates.map((t) => (
-              <option key={t.id} value={t.id}>
-                {t.name}
-              </option>
-            ))}
+            {recommended.length > 0 && (
+              <optgroup label={`Recommended for ${recommendedType}`}>
+                {recommended.map((t) => (
+                  <option key={t.id} value={t.id}>
+                    {t.name}
+                  </option>
+                ))}
+              </optgroup>
+            )}
+            <optgroup label={recommended.length > 0 ? "Other templates" : "Templates"}>
+              {other.map((t) => (
+                <option key={t.id} value={t.id}>
+                  {t.name}
+                  {t.business_type ? ` (${t.business_type})` : ""}
+                </option>
+              ))}
+            </optgroup>
           </select>
         )}
 
@@ -370,8 +597,101 @@ function MessageStep({
             )}
           </div>
         )}
+
+        {channel === "email" && <AttachmentsSection templateId={selectedTemplateId} />}
       </div>
     </Card>
+  );
+}
+
+// Inline images (cid, referenced via <img src="cid:...">) + plain attachments (e.g. a PDF brochure)
+// for the currently-selected template. Attachments live on the template row, so they're only
+// available once a saved template is picked — an ad-hoc body has nowhere to persist the bytes.
+function AttachmentsSection({ templateId }: { templateId: string | undefined }) {
+  const { data: images = [] } = useTemplateImages(templateId);
+  const addImage = useAddTemplateImage();
+  const inlineRef = useRef<HTMLInputElement>(null);
+  const attachRef = useRef<HTMLInputElement>(null);
+
+  function upload(file: File, isInline: boolean) {
+    if (!templateId) {
+      toast.error("Pick or save a template first — attachments are stored on the template.");
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      const base64 = (reader.result as string).split(",")[1] ?? "";
+      addImage.mutate(
+        {
+          templateId,
+          cid: `${isInline ? "img" : "file"}-${Date.now()}`,
+          filename: file.name,
+          mime: file.type || "application/octet-stream",
+          base64,
+          isInline,
+        },
+        {
+          onSuccess: () => toast.success(`Added ${file.name}`),
+          onError: (e) => toast.error(e.message),
+        },
+      );
+    };
+    reader.readAsDataURL(file);
+  }
+
+  return (
+    <div className="rounded border border-border p-2">
+      <p className="mb-1.5 text-[10px] uppercase text-muted-foreground">
+        Attachments {!templateId && "(save/pick a template first)"}
+      </p>
+      <div className="flex flex-wrap gap-1.5">
+        <Button
+          variant="outline"
+          size="sm"
+          className="h-7 gap-1 border-border text-[11px]"
+          disabled={!templateId}
+          onClick={() => inlineRef.current?.click()}
+        >
+          <ImageIcon className="h-3 w-3" /> Inline image
+        </Button>
+        <input
+          ref={inlineRef}
+          type="file"
+          accept="image/*"
+          className="hidden"
+          onChange={(e) => e.target.files?.[0] && upload(e.target.files[0], true)}
+        />
+        <Button
+          variant="outline"
+          size="sm"
+          className="h-7 gap-1 border-border text-[11px]"
+          disabled={!templateId}
+          onClick={() => attachRef.current?.click()}
+        >
+          <Paperclip className="h-3 w-3" /> Attach a file
+        </Button>
+        <input
+          ref={attachRef}
+          type="file"
+          className="hidden"
+          onChange={(e) => e.target.files?.[0] && upload(e.target.files[0], false)}
+        />
+      </div>
+      {images.length > 0 && (
+        <ul className="mt-2 space-y-1">
+          {images.map((img) => (
+            <li
+              key={img.id}
+              className="flex items-center gap-1.5 text-[11px] text-muted-foreground"
+            >
+              {img.isInline ? <ImageIcon className="h-3 w-3" /> : <FileText className="h-3 w-3" />}
+              {img.filename}
+              <span className="text-[10px]">{img.isInline ? "(inline)" : "(attachment)"}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
   );
 }
 
@@ -504,6 +824,7 @@ function SendStep({
   recipients,
   subject,
   body,
+  templateId,
   campaignId,
   setCampaignId,
 }: {
@@ -511,6 +832,7 @@ function SendStep({
   recipients: MarketingRecipient[];
   subject: string;
   body: string;
+  templateId: string | undefined;
   campaignId: string | undefined;
   setCampaignId: (id: string) => void;
 }) {
@@ -524,7 +846,13 @@ function SendStep({
     if (!body.trim()) return toast.error("Write a message first");
     if (channel === "email" && !subject.trim()) return toast.error("Add a subject");
     create.mutate(
-      { channel, subject: channel === "email" ? subject : null, body, recipients },
+      {
+        channel,
+        templateId: templateId ?? null,
+        subject: channel === "email" ? subject : null,
+        body,
+        recipients,
+      },
       {
         onSuccess: ({ campaign }) => {
           setCampaignId(campaign.id);
@@ -573,6 +901,8 @@ function SendStep({
               {detail.campaign.failed_count} · skipped {detail.campaign.skipped_count}
             </div>
           )}
+          {campaignId && <ReportRow campaignId={campaignId} />}
+          {campaignId && <FailedRecipientsPanel campaignId={campaignId} />}
         </div>
       ) : (
         <div className="mt-4 space-y-3">
@@ -586,15 +916,21 @@ function SendStep({
             </Button>
           ) : (
             <>
-              <a href={campaignVcardUrl(campaignId)} target="_blank" rel="noreferrer">
-                <Button variant="outline" size="sm" className="h-8 gap-1.5 border-border">
-                  <Download className="h-3.5 w-3.5" /> Download vCard (save contacts by name)
-                </Button>
-              </a>
+              <div className="flex flex-wrap gap-1.5">
+                <a href={campaignVcardUrl(campaignId)} target="_blank" rel="noreferrer">
+                  <Button variant="outline" size="sm" className="h-8 gap-1.5 border-border">
+                    <Download className="h-3.5 w-3.5" /> Download vCard
+                  </Button>
+                </a>
+                <ReportRow campaignId={campaignId} />
+              </div>
+              <AutomatedSendPanel campaignId={campaignId} />
               <p className="text-[11px] text-muted-foreground">
-                Click each business to open WhatsApp with the message pre-filled, then press Send.
+                Or click each business below to open WhatsApp with the message pre-filled, then
+                press Send.
               </p>
               <WhatsAppRecipientList campaignId={campaignId} />
+              <FailedRecipientsPanel campaignId={campaignId} />
             </>
           )}
         </div>
@@ -629,6 +965,147 @@ function SendStep({
         </DialogContent>
       </Dialog>
     </Card>
+  );
+}
+
+function ReportRow({ campaignId }: { campaignId: string }) {
+  return (
+    <a href={campaignExportUrl(campaignId)} target="_blank" rel="noreferrer">
+      <Button variant="outline" size="sm" className="h-8 gap-1.5 border-border">
+        <FileSpreadsheet className="h-3.5 w-3.5" /> Download report (.xlsx)
+      </Button>
+    </a>
+  );
+}
+
+// Shown for either channel once a campaign exists — the excel report (ReportRow) has the full
+// detail, but seeing failures inline means the operator doesn't have to download anything just to
+// know what went wrong.
+function FailedRecipientsPanel({ campaignId }: { campaignId: string }) {
+  const { data } = useCampaign(campaignId);
+  const failed: CampaignRecipient[] = (data?.recipients ?? []).filter((r) => r.status === "failed");
+  if (failed.length === 0) return null;
+
+  return (
+    <div className="rounded border border-destructive/30 bg-destructive/5 p-2">
+      <p className="mb-1.5 text-[10px] uppercase text-destructive">Failed ({failed.length})</p>
+      <ul className="max-h-40 space-y-1 overflow-y-auto">
+        {failed.map((r) => (
+          <li key={r.id} className="text-[11px]">
+            <span className="font-medium">{r.business_name}</span>{" "}
+            <span className="text-muted-foreground">— {r.error ?? "unknown error"}</span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+// Talks to the local automation agent (backend/whatsapp-sender), a separate process the operator
+// runs on their own machine — see its README. "Agent not detected" is the expected default state,
+// not an error; only shows real controls once it's actually reachable.
+function AutomatedSendPanel({ campaignId }: { campaignId: string }) {
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const status = useAgentStatus({ enabled: true, poll: true });
+  const start = useStartAutomatedSend();
+  const stop = useStopAutomatedSend();
+  const testSend = useAgentTestSend();
+
+  const agentUnreachable = status.isError;
+  const thisRunning = status.data?.running && status.data.campaignId === campaignId;
+  const otherRunning = status.data?.running && status.data.campaignId !== campaignId;
+
+  return (
+    <div className="rounded border border-border p-3">
+      <div className="flex items-center justify-between">
+        <p className="text-xs font-medium">Automated send (local agent)</p>
+        <Button
+          variant="ghost"
+          size="sm"
+          className="h-6 text-[11px]"
+          disabled={agentUnreachable || testSend.isPending}
+          onClick={() =>
+            testSend.mutate(undefined, {
+              onSuccess: () => toast.success("Trial message sent — check the test phone"),
+              onError: (e) => toast.error(e.message),
+            })
+          }
+        >
+          Send test
+        </Button>
+      </div>
+
+      {agentUnreachable ? (
+        <p className="mt-1.5 text-[11px] text-muted-foreground">
+          Agent not detected. Run <code className="rounded bg-muted px-1">npm run agent</code> in{" "}
+          <code className="rounded bg-muted px-1">backend/whatsapp-sender</code> (see its README),
+          then reload this page.
+        </p>
+      ) : thisRunning ? (
+        <div className="mt-1.5 space-y-1.5">
+          <p className="text-[11px] text-muted-foreground">
+            {status.data?.lastMessage} ({status.data?.sent}/{status.data?.total} sent,{" "}
+            {status.data?.failed} failed)
+          </p>
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-7 gap-1 border-destructive text-[11px] text-destructive"
+            disabled={stop.isPending}
+            onClick={() => stop.mutate()}
+          >
+            <Square className="h-3 w-3" /> Stop
+          </Button>
+        </div>
+      ) : otherRunning ? (
+        <p className="mt-1.5 text-[11px] text-muted-foreground">
+          Another campaign is currently sending via the agent — wait for it to finish.
+        </p>
+      ) : (
+        <Button size="sm" className="mt-1.5 h-8 gap-1.5" onClick={() => setConfirmOpen(true)}>
+          <Zap className="h-3.5 w-3.5" /> Start Automated Send
+        </Button>
+      )}
+
+      <Dialog open={confirmOpen} onOpenChange={setConfirmOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Start automated WhatsApp send?</DialogTitle>
+            <DialogDescription>
+              This automates a real WhatsApp Web session outside WhatsApp's Business API terms. Your
+              number can be rate-limited or banned. Make sure you've run a trial send first.
+            </DialogDescription>
+          </DialogHeader>
+          <p className="text-xs text-muted-foreground">
+            The local agent will open each pending recipient's chat and press Send, with a
+            randomized delay and a daily cap between messages.
+          </p>
+          <div className="flex justify-end gap-2">
+            <Button variant="ghost" size="sm" onClick={() => setConfirmOpen(false)}>
+              Cancel
+            </Button>
+            <Button
+              size="sm"
+              disabled={start.isPending}
+              onClick={() =>
+                start.mutate(
+                  { campaignId },
+                  {
+                    onSuccess: () => {
+                      setConfirmOpen(false);
+                      toast.success("Automated send started");
+                    },
+                    onError: (e) => toast.error(e.message),
+                  },
+                )
+              }
+            >
+              I understand — start
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+    </div>
   );
 }
 

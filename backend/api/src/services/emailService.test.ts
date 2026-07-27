@@ -32,7 +32,13 @@ const rec: Recipient = {
 describe("renderEmail", () => {
   it("substitutes placeholders, appends the unsubscribe footer, and wires CID images", () => {
     const images = [
-      { cid: "logo", filename: "logo.png", mime: "image/png", bytes: Buffer.from([1, 2, 3]) },
+      {
+        cid: "logo",
+        filename: "logo.png",
+        mime: "image/png",
+        bytes: Buffer.from([1, 2, 3]),
+        isInline: true,
+      },
     ];
     const r = renderEmail(
       smtp,
@@ -49,7 +55,30 @@ describe("renderEmail", () => {
     expect(r.html).toContain("1 Test St, Dubai");
     expect(r.headers["List-Unsubscribe"]).toMatch(/^<https?:.*\/unsubscribe\?email=owner%40flow\.com&token=/);
     expect(r.replyTo).toBe("reply@example.com");
-    expect(r.attachments[0]).toMatchObject({ cid: "logo", filename: "logo.png" });
+    expect(r.attachments[0]).toMatchObject({
+      cid: "logo",
+      filename: "logo.png",
+      contentDisposition: "inline",
+    });
+  });
+
+  it("wires a non-inline image as a plain attachment (no cid, Content-Disposition: attachment)", () => {
+    const images = [
+      {
+        cid: "brochure",
+        filename: "brochure.pdf",
+        mime: "application/pdf",
+        bytes: Buffer.from([1, 2, 3]),
+        isInline: false,
+      },
+    ];
+    const r = renderEmail(smtp, rec, "Hi {business_name}", "<p>See attached.</p>", images);
+    expect(r.attachments[0]).toMatchObject({
+      filename: "brochure.pdf",
+      contentType: "application/pdf",
+      contentDisposition: "attachment",
+    });
+    expect(r.attachments[0]!.cid).toBeUndefined();
   });
 
   it("produces a message nodemailer's jsonTransport accepts", async () => {

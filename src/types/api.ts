@@ -233,6 +233,26 @@ export interface MessageTemplate {
   name: string;
   subject: string | null;
   body: string;
+  business_type: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface MessageTemplateImage {
+  id: string;
+  cid: string;
+  filename: string;
+  mime: string;
+  isInline: boolean;
+}
+
+export interface MarketingContact {
+  id: string;
+  business_name: string;
+  business_type: string | null;
+  location: string | null;
+  phone: string | null;
+  email: string | null;
   created_at: string;
   updated_at: string;
 }

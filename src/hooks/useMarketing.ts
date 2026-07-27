@@ -6,9 +6,11 @@ import type {
   CampaignRecipient,
   CampaignStatus,
   EmailSuppression,
+  MarketingContact,
   MarketingRecipient,
   MessageChannel,
   MessageTemplate,
+  MessageTemplateImage,
   PublicEmailCredentials,
   RecipientPreview,
 } from "@/types/api";
@@ -18,9 +20,12 @@ export const marketingKeys = {
   credentials: () => [...marketingKeys.all, "email-credentials"] as const,
   templates: (channel?: MessageChannel) =>
     [...marketingKeys.all, "templates", channel ?? "all"] as const,
+  templateImages: (templateId: string) =>
+    [...marketingKeys.all, "template-images", templateId] as const,
   campaigns: () => [...marketingKeys.all, "campaigns"] as const,
   campaign: (id: string) => [...marketingKeys.all, "campaign", id] as const,
   suppressions: () => [...marketingKeys.all, "suppressions"] as const,
+  contacts: () => [...marketingKeys.all, "contacts"] as const,
 };
 
 const ACTIVE_CAMPAIGN: ReadonlySet<CampaignStatus> = new Set(["sending"]);
@@ -29,6 +34,7 @@ const ACTIVE_CAMPAIGN: ReadonlySet<CampaignStatus> = new Set(["sending"]);
 export interface RecipientSource {
   upload?: { filename: string; base64: string };
   ocrJobIds?: string[];
+  contactIds?: string[];
 }
 export function usePreviewRecipients() {
   return useMutation({
@@ -94,6 +100,7 @@ export function useCreateTemplate() {
       name: string;
       subject?: string | null;
       body: string;
+      businessType?: string | null;
     }) => api.post<{ template: MessageTemplate }>("/marketing/templates", input),
     onSuccess: () => void qc.invalidateQueries({ queryKey: marketingKeys.all }),
   });
@@ -105,7 +112,20 @@ export function useDeleteTemplate() {
     onSuccess: () => void qc.invalidateQueries({ queryKey: marketingKeys.all }),
   });
 }
+export function useTemplateImages(templateId: string | undefined) {
+  return useQuery({
+    queryKey: marketingKeys.templateImages(templateId ?? ""),
+    queryFn: async () =>
+      (
+        await api.get<{ images: MessageTemplateImage[] }>(
+          `/marketing/templates/${templateId}/images`,
+        )
+      ).images,
+    enabled: templateId !== undefined,
+  });
+}
 export function useAddTemplateImage() {
+  const qc = useQueryClient();
   return useMutation({
     mutationFn: (input: {
       templateId: string;
@@ -113,16 +133,48 @@ export function useAddTemplateImage() {
       filename: string;
       mime: string;
       base64: string;
+      isInline: boolean;
     }) =>
-      api.post<{ image: { id: string; cid: string } }>(
-        `/marketing/templates/${input.templateId}/images`,
-        {
-          cid: input.cid,
-          filename: input.filename,
-          mime: input.mime,
-          base64: input.base64,
-        },
-      ),
+      api.post<{ image: MessageTemplateImage }>(`/marketing/templates/${input.templateId}/images`, {
+        cid: input.cid,
+        filename: input.filename,
+        mime: input.mime,
+        base64: input.base64,
+        isInline: input.isInline,
+      }),
+    onSuccess: (_d, input) =>
+      void qc.invalidateQueries({ queryKey: marketingKeys.templateImages(input.templateId) }),
+  });
+}
+
+// --- contacts (manually-added, reusable) ---
+export function useContacts() {
+  return useQuery({
+    queryKey: marketingKeys.contacts(),
+    queryFn: async () =>
+      (await api.get<{ contacts: MarketingContact[] }>("/marketing/contacts")).contacts,
+  });
+}
+export interface CreateContactInput {
+  businessName: string;
+  businessType?: string | null;
+  location?: string | null;
+  phone?: string | null;
+  email?: string | null;
+}
+export function useCreateContact() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: CreateContactInput) =>
+      api.post<{ contact: MarketingContact }>("/marketing/contacts", input),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: marketingKeys.contacts() }),
+  });
+}
+export function useDeleteContact() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.delete<void>(`/marketing/contacts/${id}`),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: marketingKeys.contacts() }),
   });
 }
 
@@ -184,6 +236,9 @@ export function useMarkRecipientSent() {
 }
 export function campaignVcardUrl(id: string): string {
   return fileUrl(`/marketing/campaigns/${id}/vcard`);
+}
+export function campaignExportUrl(id: string): string {
+  return fileUrl(`/marketing/campaigns/${id}/export`);
 }
 
 // --- suppressions ---

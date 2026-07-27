@@ -304,6 +304,7 @@ export interface MessageTemplate {
   name: string;
   subject: string | null;
   body: string;
+  business_type: string | null; // null = generic, shown for every business type
   created_by: string | null;
   created_at: Date;
   updated_at: Date;
@@ -316,7 +317,20 @@ export interface MessageTemplateImage {
   filename: string;
   mime: string;
   bytes: Buffer;
+  is_inline: boolean; // true = cid-referenced inline image; false = a plain attachment (e.g. a PDF)
   created_at: Date;
+}
+
+export interface MarketingContact {
+  id: string;
+  business_name: string;
+  business_type: string | null;
+  location: string | null;
+  phone: string | null;
+  email: string | null;
+  created_by: string | null;
+  created_at: Date;
+  updated_at: Date;
 }
 
 export interface Campaign {

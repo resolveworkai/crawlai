@@ -22,6 +22,7 @@ const cleanupUserIds: string[] = [];
 const cleanupCampaignIds: string[] = [];
 const cleanupTemplateIds: string[] = [];
 const cleanupSuppress: string[] = [];
+const cleanupContactIds: string[] = [];
 
 let operatorAgent: ReturnType<typeof request.agent>;
 let viewerAgent: ReturnType<typeof request.agent>;
@@ -57,7 +58,16 @@ afterAll(async () => {
     await pool.query("DELETE FROM message_templates WHERE id = ANY($1)", [cleanupTemplateIds]);
   if (cleanupSuppress.length)
     await pool.query("DELETE FROM email_suppressions WHERE email = ANY($1)", [cleanupSuppress]);
+  if (cleanupContactIds.length)
+    await pool.query("DELETE FROM marketing_contacts WHERE id = ANY($1)", [cleanupContactIds]);
   await pool.query("DELETE FROM users WHERE id = ANY($1)", [cleanupUserIds]);
+  // email_credentials is a singleton row (id=1) mutated by the "email credentials" test below —
+  // reset it to blank rather than deleting it (the app expects the row to always exist).
+  await pool.query(
+    `UPDATE email_credentials SET smtp_host=NULL, smtp_port=NULL, smtp_secure=TRUE, smtp_user=NULL,
+       smtp_password_encrypted=NULL, from_name=NULL, from_email=NULL, reply_to=NULL,
+       org_address=NULL, verified=FALSE, updated_at=now() WHERE id=1`,
+  );
   await pool.end();
 });
 
@@ -153,6 +163,87 @@ describe("templates + campaign + whatsapp", () => {
     expect(vcard.status).toBe(200);
     expect(vcard.headers["content-type"]).toContain("text/vcard");
     expect(vcard.text).toContain("FN:Gym A");
+
+    // Binary xlsx — supertest doesn't buffer application/* bodies into .text/.body by default (the
+    // actual workbook structure is validated by campaignExportService.test.ts); just confirm the
+    // endpoint responds with the right headers.
+    const report = await operatorAgent.get(`/marketing/campaigns/${campaignId}/export`);
+    expect(report.status).toBe(200);
+    expect(report.headers["content-type"]).toContain("spreadsheetml");
+    expect(report.headers["content-disposition"]).toContain("campaign-report_whatsapp");
+  });
+
+  it("mark-failed records a failure instead of leaving the recipient stuck pending (used by the automation agent)", async () => {
+    const campaign = await operatorAgent.post("/marketing/campaigns").send({
+      channel: "whatsapp",
+      body: "Hi {business_name}!",
+      recipients: [
+        { businessName: "Gym C", businessType: "Gym", location: "Pune", phone: "+913333333333", email: null },
+      ],
+    });
+    expect(campaign.status).toBe(201);
+    const campaignId = campaign.body.campaign.id as string;
+    cleanupCampaignIds.push(campaignId);
+
+    const detail = await operatorAgent.get(`/marketing/campaigns/${campaignId}`);
+    const rid = detail.body.recipients[0].id as string;
+
+    const fail = await operatorAgent
+      .post(`/marketing/campaigns/${campaignId}/recipients/${rid}/mark-failed`)
+      .send({ error: "chat did not load" });
+    expect(fail.status).toBe(200);
+    expect(fail.body.recipient.status).toBe("failed");
+    expect(fail.body.recipient.error).toBe("chat did not load");
+    expect(fail.body.campaign.failed_count).toBe(1);
+  });
+});
+
+describe("contacts (manually-added, reusable)", () => {
+  it("creates, normalizes phone/email, lists, and feeds into recipient preview via contactIds", async () => {
+    const denied = await viewerAgent.post("/marketing/contacts").send({ businessName: "X" });
+    expect(denied.status).toBe(403);
+
+    const created = await operatorAgent.post("/marketing/contacts").send({
+      businessName: "Hand-Added Gym",
+      businessType: "Gym",
+      location: "Jaipur",
+      phone: "98765 43210", // bare Indian mobile — should normalize to +91...
+      email: "OWNER@Gym.com", // should lowercase
+    });
+    expect(created.status).toBe(201);
+    const contactId = created.body.contact.id as string;
+    cleanupContactIds.push(contactId);
+    expect(created.body.contact.phone).toBe("+919876543210");
+    expect(created.body.contact.email).toBe("owner@gym.com");
+
+    const list = await operatorAgent.get("/marketing/contacts");
+    expect(list.status).toBe(200);
+    expect(list.body.contacts.some((c: { id: string }) => c.id === contactId)).toBe(true);
+
+    const preview = await operatorAgent
+      .post("/marketing/recipients/preview")
+      .send({ contactIds: [contactId] });
+    expect(preview.status).toBe(200);
+    expect(preview.body.total).toBe(1);
+    expect(preview.body.recipients[0]).toMatchObject({ businessName: "Hand-Added Gym", businessType: "Gym" });
+  });
+
+  it("updates and deletes a contact", async () => {
+    const created = await operatorAgent.post("/marketing/contacts").send({ businessName: "Temp Co" });
+    const contactId = created.body.contact.id as string;
+
+    const updated = await operatorAgent
+      .patch(`/marketing/contacts/${contactId}`)
+      .send({ businessName: "Renamed Co", location: "Goa" });
+    expect(updated.status).toBe(200);
+    expect(updated.body.contact.business_name).toBe("Renamed Co");
+    expect(updated.body.contact.location).toBe("Goa");
+
+    const del = await operatorAgent.delete(`/marketing/contacts/${contactId}`);
+    expect(del.status).toBe(204);
+
+    const missing = await operatorAgent.delete(`/marketing/contacts/${contactId}`);
+    expect(missing.status).toBe(404);
   });
 });
 

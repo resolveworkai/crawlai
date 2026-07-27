@@ -31,28 +31,38 @@ export async function createTemplate(input: {
   name: string;
   subject: string | null;
   body: string;
+  businessType: string | null;
   createdBy: string | null;
 }): Promise<MessageTemplate> {
   const { rows } = await pool.query<MessageTemplate>(
-    `INSERT INTO message_templates (channel, name, subject, body, created_by)
-     VALUES ($1, $2, $3, $4, $5) RETURNING *`,
-    [input.channel, input.name, input.subject, input.body, input.createdBy],
+    `INSERT INTO message_templates (channel, name, subject, body, business_type, created_by)
+     VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
+    [input.channel, input.name, input.subject, input.body, input.businessType, input.createdBy],
   );
   return rows[0]!;
 }
 
 export async function updateTemplate(
   id: string,
-  patch: { name?: string; subject?: string | null; body?: string },
+  patch: { name?: string; subject?: string | null; body?: string; businessType?: string | null },
 ): Promise<MessageTemplate | null> {
   const { rows } = await pool.query<MessageTemplate>(
     `UPDATE message_templates SET
         name = COALESCE($2, name),
         subject = CASE WHEN $3::boolean THEN $4 ELSE subject END,
         body = COALESCE($5, body),
+        business_type = CASE WHEN $6::boolean THEN $7 ELSE business_type END,
         updated_at = now()
       WHERE id = $1 RETURNING *`,
-    [id, patch.name ?? null, patch.subject !== undefined, patch.subject ?? null, patch.body ?? null],
+    [
+      id,
+      patch.name ?? null,
+      patch.subject !== undefined,
+      patch.subject ?? null,
+      patch.body ?? null,
+      patch.businessType !== undefined,
+      patch.businessType ?? null,
+    ],
   );
   return rows[0] ?? null;
 }
@@ -70,14 +80,15 @@ export async function addTemplateImage(input: {
   filename: string;
   mime: string;
   bytes: Buffer;
+  isInline: boolean;
 }): Promise<Omit<MessageTemplateImage, "bytes">> {
   const { rows } = await pool.query<Omit<MessageTemplateImage, "bytes">>(
-    `INSERT INTO message_template_images (template_id, cid, filename, mime, bytes)
-     VALUES ($1, $2, $3, $4, $5)
+    `INSERT INTO message_template_images (template_id, cid, filename, mime, bytes, is_inline)
+     VALUES ($1, $2, $3, $4, $5, $6)
      ON CONFLICT (template_id, cid) DO UPDATE SET filename = EXCLUDED.filename,
-       mime = EXCLUDED.mime, bytes = EXCLUDED.bytes
-     RETURNING id, template_id, cid, filename, mime, created_at`,
-    [input.templateId, input.cid, input.filename, input.mime, input.bytes],
+       mime = EXCLUDED.mime, bytes = EXCLUDED.bytes, is_inline = EXCLUDED.is_inline
+     RETURNING id, template_id, cid, filename, mime, is_inline, created_at`,
+    [input.templateId, input.cid, input.filename, input.mime, input.bytes, input.isInline],
   );
   return rows[0]!;
 }
