@@ -50,9 +50,17 @@ reuses it. This command then sends one trial message to `TEST_PHONE_NUMBER` (`.e
 ever touches a real business lead:
 
 ```bash
-npm run test-send                                  # default trial message
-npm run test-send -- --message "Custom trial text"  # or your own
+npm run test-send                                    # default number, default message
+npm run test-send -- --phone +919999999999           # a different number
+npm run test-send -- --message "Custom trial text"   # your own text
+npm run test-send -- --group "My Group Name"         # send to a GROUP instead
 ```
+
+**Groups**: WhatsApp groups have no phone number, so the `?phone=` URL trick doesn't apply — the
+agent instead searches your chat list by name, opens the match, and types the message. Use the
+group's **exact** name; if several chats match, the first result wins, so distinctive names are
+safest. Campaigns remain number-based (they come from crawled businesses); group sending is
+available via `--group` here and `WaSession.sendToGroup()` in code.
 
 Check that phone. If the message arrived correctly, you're ready for a real campaign. If it didn't
 (wrong composer selector, chat never opened, etc.), fix that here first — never debug against real

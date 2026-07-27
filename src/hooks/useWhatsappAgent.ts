@@ -9,6 +9,16 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 const AGENT_BASE_URL = "http://127.0.0.1:8787";
 
+/** One row of the agent's live send log — mirrors SendLogEntry in
+ * backend/whatsapp-sender/src/campaignRunner.ts. */
+export interface AgentSendLogEntry {
+  at: string;
+  businessName: string;
+  phone: string;
+  ok: boolean;
+  error?: string;
+}
+
 export interface AgentStatus {
   running: boolean;
   campaignId?: string;
@@ -18,6 +28,7 @@ export interface AgentStatus {
   remaining?: number;
   lastMessage?: string;
   done?: boolean;
+  log?: AgentSendLogEntry[];
 }
 
 async function agentFetch<T>(path: string, init?: RequestInit): Promise<T> {

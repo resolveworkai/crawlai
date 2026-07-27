@@ -87,7 +87,15 @@ app.post("/start", (req: Request, res: Response) => {
   current = {
     campaignId,
     stopSignal,
-    progress: { total: 0, sent: 0, failed: 0, remaining: 0, lastMessage: "Starting…", done: false },
+    progress: {
+      total: 0,
+      sent: 0,
+      failed: 0,
+      remaining: 0,
+      lastMessage: "Starting…",
+      done: false,
+      log: [],
+    },
   };
 
   void runCampaign(

@@ -171,7 +171,95 @@ function ChannelComposer({ channel }: { channel: MessageChannel }) {
         campaignId={campaignId}
         setCampaignId={setCampaignId}
       />
+      {campaignId && (
+        <div className="lg:col-span-2">
+          <SendLogPanel channel={channel} campaignId={campaignId} />
+        </div>
+      )}
     </div>
+  );
+}
+
+// Live per-message send log — the counters alone don't tell you WHICH number a message went to or
+// why one failed. Rows come from campaign_recipients (the server-side source of truth, so it covers
+// manual click-to-chat sends too and survives a reload), enriched with the local agent's in-memory
+// log for the failure text of an in-flight automated run.
+function SendLogPanel({ channel, campaignId }: { channel: MessageChannel; campaignId: string }) {
+  const agent = useAgentStatus({ enabled: channel === "whatsapp", poll: true });
+  const agentRunning = Boolean(agent.data?.running && agent.data.campaignId === campaignId);
+  const { data } = useCampaign(campaignId, agentRunning);
+
+  const recipients = data?.recipients ?? [];
+  const done = recipients.filter((r) => r.status === "sent" || r.status === "failed");
+  const sent = done.filter((r) => r.status === "sent").length;
+  const failed = done.filter((r) => r.status === "failed").length;
+
+  // Newest first — during a live run the operator is watching the tail, not the head.
+  const rows = [...done].sort((a, b) => (b.sent_at ?? "").localeCompare(a.sent_at ?? ""));
+
+  return (
+    <Card className="border-border bg-card p-5">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h3 className="font-display text-base font-semibold">
+          Send log{" "}
+          {agentRunning && (
+            <span className="ml-1 animate-pulse text-[11px] font-normal text-success">● live</span>
+          )}
+        </h3>
+        <div className="flex items-center gap-3 text-xs">
+          <span className="text-success">{sent} sent</span>
+          {failed > 0 && <span className="text-destructive">{failed} failed</span>}
+          <span className="text-muted-foreground">of {recipients.length}</span>
+        </div>
+      </div>
+
+      {agentRunning && agent.data?.lastMessage && (
+        <p className="mt-1 text-[11px] text-muted-foreground">{agent.data.lastMessage}</p>
+      )}
+
+      {rows.length === 0 ? (
+        <p className="mt-3 text-xs text-muted-foreground">
+          Nothing sent yet — messages appear here as they go out, with the number and the result.
+        </p>
+      ) : (
+        <div className="mt-3 max-h-72 overflow-auto rounded border border-border">
+          <table className="w-full text-[11px]">
+            <thead className="sticky top-0 bg-muted/50 text-muted-foreground">
+              <tr>
+                <th className="px-2 py-1 text-left">Time</th>
+                <th className="px-2 py-1 text-left">Business</th>
+                <th className="px-2 py-1 text-left">
+                  {channel === "whatsapp" ? "To (number)" : "To (email)"}
+                </th>
+                <th className="px-2 py-1 text-left">Result</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-border">
+              {rows.map((r) => (
+                <tr key={r.id}>
+                  <td className="whitespace-nowrap px-2 py-1 text-muted-foreground">
+                    {r.sent_at ? new Date(r.sent_at).toLocaleTimeString() : "—"}
+                  </td>
+                  <td className="px-2 py-1">{r.business_name}</td>
+                  <td className="px-2 py-1 font-mono">
+                    {(channel === "whatsapp" ? r.phone : r.email) ?? "—"}
+                  </td>
+                  <td className="px-2 py-1">
+                    {r.status === "sent" ? (
+                      <span className="text-success">✓ sent</span>
+                    ) : (
+                      <span className="text-destructive">
+                        ✗ failed{r.error ? ` — ${r.error}` : ""}
+                      </span>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </Card>
   );
 }
 

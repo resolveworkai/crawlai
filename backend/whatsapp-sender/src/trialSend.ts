@@ -24,3 +24,18 @@ export async function sendTrialMessage(
     await wa.close();
   }
 }
+
+/** Same trial flow, but targeting a GROUP by name — groups have no phone number, so this is the
+ * only way to smoke-test group delivery before using it for real. */
+export async function sendTrialToGroup(
+  groupName: string,
+  message: string = DEFAULT_TEST_MESSAGE,
+): Promise<void> {
+  const wa = new WaSession();
+  await wa.open();
+  try {
+    await wa.sendToGroup(groupName, message);
+  } finally {
+    await wa.close();
+  }
+}

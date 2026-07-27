@@ -27,6 +27,16 @@ export interface RunOptions {
   stateFilePath: string;
 }
 
+/** One row of the live send log surfaced in the UI — the operator needs to see WHICH number each
+ * message actually went to and whether it landed, not just a running total. */
+export interface SendLogEntry {
+  at: string; // ISO timestamp
+  businessName: string;
+  phone: string;
+  ok: boolean;
+  error?: string;
+}
+
 export interface RunProgress {
   total: number;
   sent: number;
@@ -34,6 +44,7 @@ export interface RunProgress {
   remaining: number;
   lastMessage: string;
   done: boolean;
+  log: SendLogEntry[];
 }
 
 /** Cooperative stop flag — the agent's /stop handler sets `stopped = true`; the loop checks it
@@ -71,8 +82,9 @@ export async function runCampaign(
   let failed = 0;
   const total = pending.length;
 
+  const log: SendLogEntry[] = [];
   const report = (lastMessage: string, done = false): void =>
-    onProgress({ total, sent, failed, remaining: total - sent - failed, lastMessage, done });
+    onProgress({ total, sent, failed, remaining: total - sent - failed, lastMessage, done, log });
 
   if (total === 0) {
     report("Nothing to send — no pending recipients with a usable phone.", true);
@@ -104,11 +116,24 @@ export async function runCampaign(
         state = recordSend(state);
         saveState(options.stateFilePath, state);
         sent += 1;
+        log.push({
+          at: new Date().toISOString(),
+          businessName: r.business_name,
+          phone: r.phone!,
+          ok: true,
+        });
         report(`Sent → ${r.business_name}`);
       } catch (err) {
         failed += 1;
         const message = (err as Error).message.slice(0, 500);
         await api.markFailed(options.campaignId, r.id, message).catch(() => undefined);
+        log.push({
+          at: new Date().toISOString(),
+          businessName: r.business_name,
+          phone: r.phone!,
+          ok: false,
+          error: message,
+        });
         report(`Failed → ${r.business_name}: ${message}`);
       }
       if (stopSignal.stopped) {

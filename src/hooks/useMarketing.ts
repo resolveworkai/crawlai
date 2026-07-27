@@ -201,7 +201,11 @@ export function useCampaigns() {
       (await api.get<{ campaigns: Campaign[] }>("/marketing/campaigns")).campaigns,
   });
 }
-export function useCampaign(id: string | undefined) {
+/** `pollWhileActive` forces the 2s poll even when the campaign row itself isn't 'sending' — a
+ * WhatsApp campaign driven by the local agent stays 'draft' server-side (progress is recorded
+ * per-recipient via mark-sent/mark-failed, never on the campaign), so without this the live send
+ * log would sit frozen while the agent is actually working. */
+export function useCampaign(id: string | undefined, pollWhileActive = false) {
   return useQuery({
     queryKey: marketingKeys.campaign(id ?? ""),
     queryFn: () =>
@@ -210,7 +214,9 @@ export function useCampaign(id: string | undefined) {
       ),
     enabled: id !== undefined,
     refetchInterval: (q) =>
-      q.state.data && ACTIVE_CAMPAIGN.has(q.state.data.campaign.status) ? 2_000 : false,
+      pollWhileActive || (q.state.data && ACTIVE_CAMPAIGN.has(q.state.data.campaign.status))
+        ? 2_000
+        : false,
   });
 }
 export function useSendCampaign() {
