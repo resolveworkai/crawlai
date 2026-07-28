@@ -5,7 +5,8 @@
   "type": "module",
   "description": "Local-only WhatsApp automation agent for the Marketing tool. Runs on the operator's own machine, never deployed to the shared Docker stack. See README.md before use.",
   "scripts": {
-    "agent": "tsx src/agent.ts",
+    "agent": "tsx watch --clear-screen=false src/agent.ts",
+    "agent:no-watch": "tsx src/agent.ts",
     "send": "tsx src/send.ts",
     "test-send": "tsx src/testSend.ts",
     "dev:with-backend": "concurrently -n backend,agent -c blue,magenta \"npm --prefix ../api run dev\" \"npm run agent\"",

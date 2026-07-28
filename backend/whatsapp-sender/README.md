@@ -87,6 +87,13 @@ reports the agent isn't reachable, this command isn't running — start it first
 exposes `POST /test-send` (same trial-send capability as `npm run test-send`, for a "Send test"
 button in the UI).
 
+`npm run agent` runs under `tsx watch`, so editing anything under `src/` restarts it automatically.
+This is deliberate: the agent is long-running, and a process started before a code change silently
+keeps serving the **old** code — which once cost a full debugging cycle chasing a bug that was
+already fixed on disk. The tradeoff is that a file change **mid-campaign restarts the run**;
+recipients that hadn't been sent stay `pending`, so just start the campaign again. If you need a
+guaranteed-stable process for a long campaign, use `npm run agent:no-watch`.
+
 **Run both the backend API and the agent together** (local, non-Docker dev only — see below):
 
 ```bash
