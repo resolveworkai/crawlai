@@ -218,9 +218,21 @@ export class WaSession {
    * fails to leave the composer — the caller marks that recipient failed rather than retrying. */
   async sendTo(phoneDigits: string, text: string, mediaPath?: string): Promise<void> {
     if (!this.page) throw new Error("Session not open — call open() first");
+    const page = this.page;
     const chatTimeoutMs = Number(process.env.CHAT_TIMEOUT_MS ?? 60_000);
     const url = `https://web.whatsapp.com/send?phone=${phoneDigits}&text=${encodeURIComponent(text)}`;
-    await this.page.goto(url, { waitUntil: "commit", timeout: chatTimeoutMs });
+    await page.goto(url, { waitUntil: "commit", timeout: chatTimeoutMs });
+
+    // WhatsApp Web shows a "Continue to Chat" interstitial for a number with no prior chat history
+    // — the composer never appears until it's clicked. Without this the composer wait below just
+    // times out with no useful signal about why.
+    const continueButton = page.getByText("Continue to Chat", { exact: false }).first();
+    try {
+      await continueButton.waitFor({ timeout: 5_000 });
+      await continueButton.click();
+    } catch {
+      // No interstitial (already chatted with this number before) — proceed straight to the composer.
+    }
 
     await this.composer().waitFor({ timeout: chatTimeoutMs });
     if (mediaPath) await this.attachMedia(mediaPath);

@@ -159,6 +159,42 @@ const MARKETING_TEMPLATES: SeedTemplate[] = [
   },
   {
     channel: "whatsapp",
+    name: "Library — Haldwani launch pitch (full feature list)",
+    subject: null,
+    businessType: "Library",
+    body:
+      `Hi {business_name}! Spotted your study space in {city}. \n\n` +
+      `👋\n` +
+      `Quick question: How much time do you spend every week managing student registers, seat allocations, and fee collections?\n\n` +
+      `Most library owners face 3 big hassles:\n\n` +
+      `❌ Manual registers & fee tracking headaches\n\n` +
+      `❌ No way to track real-time seat availability\n\n` +
+      `❌ Being tied to the desk just to manage daily ops\n\n` +
+      `Portal application solves all of this! \n\n` +
+      `It's a smart web platform built specifically for libraries & study spaces.\n\n` +
+      `📍 Haldwani Launch & Business Growth:\n\n` +
+      `📍 We are actively onboarding top libraries in Haldwani to connect local students directly to your space!\n` +
+      `📩 Receive direct student booking enquiries & new admission leads online\n\n` +
+      `⚙️ Smart Operations:\n\n` +
+      `✅ Manage seats, memberships & automated UPI payments from any device, anywhere over the internet\n\n` +
+      `✅ 100% online student pass & seat tracking\n` +
+      `✅ 100% seat management\n\n` +
+      `Revenue report\n` +
+      `Month on month calculations report in 1 click\n` +
+      `Custom reports\n\n` +
+      `Occupancy report\n` +
+      `Generate leads\n` +
+      `Show your business on the top of the list\n\n` +
+      `✅ Saves 10+ hours every week so you can focus on growing your space\n\n` +
+      `🌐 Check it out here: ${PORTAL_URL}\n\n` +
+      `We are running a promotion where we are giving enterprise subscription free for first 3 month to first 100 businesses\n\n` +
+      `We would love to connect with you and help solve your daily management challenges with a quick 15-minute demo.\n\n` +
+      `📲 Just reply/ping "Hi" and we're good to go! 🗓️\n\n\n` +
+      `${PORTAL_URL}\n\n` +
+      `Reply STOP to opt out.`,
+  },
+  {
+    channel: "whatsapp",
     name: "Library — Seat bookings",
     subject: null,
     businessType: "Library",

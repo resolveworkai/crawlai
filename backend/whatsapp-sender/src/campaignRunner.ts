@@ -54,8 +54,11 @@ export interface StopSignal {
 }
 
 function decodeWaLinkText(waLink: string): string {
+  // URLSearchParams.get() already percent-decodes the value — a SECOND decodeURIComponent() here
+  // used to throw "URI malformed" on any message containing a lone `%` (e.g. "grow bookings by
+  // 30%"), which is common enough in real marketing copy that it broke nearly every send.
   const url = new URL(waLink);
-  return decodeURIComponent(url.searchParams.get("text") ?? "");
+  return url.searchParams.get("text") ?? "";
 }
 
 function delay(ms: number): Promise<void> {
