@@ -229,16 +229,67 @@ export function useSendCampaign() {
     },
   });
 }
-export function useMarkRecipientSent() {
+type CampaignDetail = { campaign: Campaign; recipients: CampaignRecipient[] };
+
+/** Shared by every recipient-status mutation below — writes the new status into the cached
+ * `campaign(id)` detail immediately (before the round-trip resolves) so the fast manual-send UI
+ * advances to the next recipient instantly instead of waiting on a network round-trip per message.
+ * Rolls back on error; always reconciles with the server via `onSettled`. */
+function useOptimisticRecipientStatus(
+  path: "mark-sent" | "mark-failed" | "mark-pending",
+  nextStatus: CampaignRecipient["status"],
+) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (input: { campaignId: string; recipientId: string }) =>
+    mutationFn: (input: { campaignId: string; recipientId: string; error?: string }) =>
       api.post<{ recipient: CampaignRecipient; campaign: Campaign }>(
-        `/marketing/campaigns/${input.campaignId}/recipients/${input.recipientId}/mark-sent`,
+        `/marketing/campaigns/${input.campaignId}/recipients/${input.recipientId}/${path}`,
+        path === "mark-failed" ? { error: input.error } : undefined,
       ),
-    onSuccess: (_d, input) =>
+    onMutate: async (input) => {
+      const key = marketingKeys.campaign(input.campaignId);
+      await qc.cancelQueries({ queryKey: key });
+      const previous = qc.getQueryData<CampaignDetail>(key);
+      if (previous) {
+        qc.setQueryData<CampaignDetail>(key, {
+          ...previous,
+          recipients: previous.recipients.map((r) =>
+            r.id === input.recipientId
+              ? {
+                  ...r,
+                  status: nextStatus,
+                  error: nextStatus === "failed" ? (input.error ?? r.error) : null,
+                  sent_at: nextStatus === "sent" ? new Date().toISOString() : null,
+                }
+              : r,
+          ),
+        });
+      }
+      return { previous };
+    },
+    onError: (_err, input, context) => {
+      if (context?.previous)
+        qc.setQueryData(marketingKeys.campaign(input.campaignId), context.previous);
+    },
+    onSettled: (_d, _e, input) =>
       void qc.invalidateQueries({ queryKey: marketingKeys.campaign(input.campaignId) }),
   });
+}
+
+export function useMarkRecipientSent() {
+  return useOptimisticRecipientStatus("mark-sent", "sent");
+}
+
+/** Records a manual-send failure/skip — e.g. the operator pressed Skip on a bad number. Mirrors
+ * the automation agent's own mark-failed call, just triggered from the UI instead. */
+export function useMarkRecipientFailed() {
+  return useOptimisticRecipientStatus("mark-failed", "failed");
+}
+
+/** Undo for the fast manual-send flow: it marks a recipient sent the instant the operator clicks
+ * (no separate confirm step), so a misclick needs a one-step way back to 'pending'. */
+export function useMarkRecipientPending() {
+  return useOptimisticRecipientStatus("mark-pending", "pending");
 }
 export function campaignVcardUrl(id: string): string {
   return fileUrl(`/marketing/campaigns/${id}/vcard`);

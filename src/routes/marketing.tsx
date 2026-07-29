@@ -1,12 +1,13 @@
 /** Authored by: Mohit Singh */
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { AppShell } from "@/components/app-shell";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Switch } from "@/components/ui/switch";
+import { Progress } from "@/components/ui/progress";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   Dialog,
@@ -26,6 +27,8 @@ import {
   useCreateCampaign,
   useCreateContact,
   useEmailCredentials,
+  useMarkRecipientFailed,
+  useMarkRecipientPending,
   useMarkRecipientSent,
   usePreviewRecipients,
   useSaveEmailCredentials,
@@ -48,6 +51,7 @@ import type {
   MessageTemplate,
 } from "@/types/api";
 import { toast } from "sonner";
+import { toWebWhatsAppUrl } from "@/lib/waWebLink";
 import {
   AlertTriangle,
   Contact,
@@ -60,10 +64,21 @@ import {
   Paperclip,
   Plus,
   Send,
+  SkipForward,
   Square,
+  Undo2,
   Upload,
   Zap,
 } from "lucide-react";
+
+// Small hand-rolled <kbd> — the shadcn set doesn't include one (checked src/components/ui/).
+function Kbd({ children }: { children: React.ReactNode }) {
+  return (
+    <kbd className="rounded border border-border bg-muted px-1 py-0.5 font-mono text-[10px] text-muted-foreground">
+      {children}
+    </kbd>
+  );
+}
 
 export const Route = createFileRoute("/marketing")({
   component: () => (
@@ -1005,19 +1020,37 @@ function SendStep({
           ) : (
             <>
               <div className="flex flex-wrap gap-1.5">
-                <a href={campaignVcardUrl(campaignId)} target="_blank" rel="noreferrer">
-                  <Button variant="outline" size="sm" className="h-8 gap-1.5 border-border">
-                    <Download className="h-3.5 w-3.5" /> Download vCard
-                  </Button>
-                </a>
                 <ReportRow campaignId={campaignId} />
               </div>
-              <AutomatedSendPanel campaignId={campaignId} />
-              <p className="text-[11px] text-muted-foreground">
-                Or click each business below to open WhatsApp with the message pre-filled, then
-                press Send.
-              </p>
-              <WhatsAppRecipientList campaignId={campaignId} />
+
+              <section className="rounded-lg border border-amber-500/30 bg-amber-500/5 p-3">
+                <div className="mb-2 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-amber-600">
+                  <Zap className="h-3.5 w-3.5" /> Automation
+                  <span className="rounded-full bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-medium normal-case tracking-normal text-amber-700">
+                    ban risk
+                  </span>
+                </div>
+                <AutomatedSendPanel campaignId={campaignId} />
+              </section>
+
+              <section className="rounded-lg border border-success/30 bg-success/5 p-3">
+                <div className="mb-2 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-success">
+                  <MessageCircle className="h-3.5 w-3.5" /> Manual
+                  <span className="rounded-full bg-success/15 px-1.5 py-0.5 text-[10px] font-medium normal-case tracking-normal text-success">
+                    zero risk
+                  </span>
+                </div>
+                <div className="mb-2 flex flex-wrap gap-1.5">
+                  <a href={campaignVcardUrl(campaignId)} target="_blank" rel="noreferrer">
+                    <Button variant="outline" size="sm" className="h-8 gap-1.5 border-border">
+                      <Download className="h-3.5 w-3.5" /> Download vCard (import first — names the
+                      chats)
+                    </Button>
+                  </a>
+                </div>
+                <ManualSendPanel campaignId={campaignId} />
+              </section>
+
               <FailedRecipientsPanel campaignId={campaignId} />
             </>
           )}
@@ -1029,7 +1062,7 @@ function SendStep({
           <DialogHeader>
             <DialogTitle>Sending WhatsApp messages</DialogTitle>
             <DialogDescription>
-              Safe, manual — no automation, so your number can't get banned.
+              Two ways to send — Automation risks a ban, Manual doesn't.
             </DialogDescription>
           </DialogHeader>
           <ol className="list-decimal space-y-2 pl-5 text-sm">
@@ -1038,11 +1071,17 @@ function SendStep({
             </li>
             <li>
               <b>Download the vCard</b> and import it into your phone — every business is saved by
-              name.
+              name, so its chat isn't just a bare number.
             </li>
             <li>
-              Click each business's <b>Open WhatsApp</b> link — the chat opens with your message
-              pre-filled; press Send.
+              In the <b>Manual</b> section, the current recipient shows one at a time. Press{" "}
+              <b>Enter</b> to open web.whatsapp.com pre-filled and mark it sent — the next one loads
+              automatically. <b>S</b> skips a bad number, <b>Ctrl+Z</b> undoes the last one.
+            </li>
+            <li>
+              The <b>Automation</b> section runs the same sends unattended via a local browser agent
+              — faster, but it's what got WhatsApp's anti-spam system to restrict linked devices on
+              this number. Manual doesn't trigger that.
             </li>
           </ol>
           <p className="mt-2 text-xs text-muted-foreground">
@@ -1197,39 +1236,137 @@ function AutomatedSendPanel({ campaignId }: { campaignId: string }) {
   );
 }
 
-function WhatsAppRecipientList({ campaignId }: { campaignId: string }) {
+// The fast manual-send flow: one recipient at a time, auto-advancing as each is handled, driven
+// by keyboard (Enter = open + mark sent, S = skip, Ctrl+Z = undo the last one). Zero platform risk
+// — this is plain click-to-chat, just with the clicking made as cheap as possible. "Current" is
+// simply the first `pending` recipient in the (server-ordered) list, so advancing needs no local
+// index — marking one sent/skipped removes it from `pending` and the next one becomes current the
+// moment the cache updates (instantly, via the optimistic update in useMarkRecipient*).
+function ManualSendPanel({ campaignId }: { campaignId: string }) {
   const { data } = useCampaign(campaignId);
-  const mark = useMarkRecipientSent();
+  const markSent = useMarkRecipientSent();
+  const markFailed = useMarkRecipientFailed();
+  const markPending = useMarkRecipientPending();
+  const [lastMarked, setLastMarked] = useState<{ id: string; name: string } | null>(null);
+
   const withLink = (data?.recipients ?? []).filter((r) => r.wa_link);
+  const pending = withLink.filter((r) => r.status === "pending");
+  const sentCount = withLink.filter((r) => r.status === "sent").length;
+  const skippedCount = withLink.filter(
+    (r) => r.status === "failed" || r.status === "skipped",
+  ).length;
+  const total = withLink.length;
+  const current = pending[0];
+
+  const openAndMarkSent = useCallback(() => {
+    if (!current?.wa_link || markSent.isPending) return;
+    window.open(toWebWhatsAppUrl(current.wa_link), "_blank", "noopener,noreferrer");
+    const { id, business_name } = current;
+    markSent.mutate(
+      { campaignId, recipientId: id },
+      { onSuccess: () => setLastMarked({ id, name: business_name }) },
+    );
+  }, [current, campaignId, markSent]);
+
+  const skipCurrent = useCallback(() => {
+    if (!current || markFailed.isPending) return;
+    markFailed.mutate({ campaignId, recipientId: current.id, error: "Skipped by operator" });
+  }, [current, campaignId, markFailed]);
+
+  const undoLast = useCallback(() => {
+    if (!lastMarked || markPending.isPending) return;
+    markPending.mutate({ campaignId, recipientId: lastMarked.id });
+    setLastMarked(null);
+  }, [lastMarked, campaignId, markPending]);
+
+  // Copies the guard-against-typing pattern from src/components/ui/sidebar.tsx's keyboard
+  // shortcut — this is the only other global keydown listener in the app.
+  useEffect(() => {
+    function onKeyDown(e: KeyboardEvent) {
+      const target = e.target as HTMLElement | null;
+      if (
+        target &&
+        (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable)
+      ) {
+        return;
+      }
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        openAndMarkSent();
+      } else if ((e.key === "s" || e.key === "S") && !e.ctrlKey && !e.metaKey) {
+        e.preventDefault();
+        skipCurrent();
+      } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") {
+        e.preventDefault();
+        undoLast();
+      }
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [openAndMarkSent, skipCurrent, undoLast]);
+
+  if (total === 0) {
+    return <p className="text-xs text-muted-foreground">No recipients with a usable phone.</p>;
+  }
+
+  const handled = sentCount + skippedCount;
 
   return (
-    <div className="max-h-64 divide-y divide-border overflow-y-auto rounded border border-border">
-      {withLink.length === 0 && (
-        <p className="p-3 text-xs text-muted-foreground">No recipients with a usable phone.</p>
-      )}
-      {withLink.map((r) => (
-        <div key={r.id} className="flex items-center justify-between gap-2 px-3 py-2 text-xs">
-          <span className="min-w-0 truncate">
-            {r.business_name} <span className="font-mono text-muted-foreground">{r.phone}</span>
-          </span>
-          <div className="flex shrink-0 items-center gap-2">
-            {r.status === "sent" ? (
-              <span className="text-[10px] text-success">sent ✓</span>
-            ) : (
-              <a
-                href={r.wa_link!}
-                target="_blank"
-                rel="noreferrer"
-                onClick={() => mark.mutate({ campaignId, recipientId: r.id })}
+    <div className="space-y-2">
+      <div className="flex items-center justify-between text-[11px] text-muted-foreground">
+        <span>
+          {sentCount} sent{skippedCount > 0 ? ` · ${skippedCount} skipped` : ""} · {pending.length}{" "}
+          remaining
+        </span>
+        <span className="font-mono">
+          {handled}/{total}
+        </span>
+      </div>
+      <Progress value={(handled / total) * 100} className="h-1.5" />
+
+      {current ? (
+        <div className="rounded-md border border-border bg-card p-3">
+          <p className="truncate text-sm font-medium text-foreground">{current.business_name}</p>
+          <p className="font-mono text-xs text-muted-foreground">{current.phone}</p>
+          {current.location && (
+            <p className="truncate text-[11px] text-muted-foreground">{current.location}</p>
+          )}
+          <div className="mt-2 flex flex-wrap items-center gap-1.5">
+            <Button
+              size="sm"
+              className="h-8 gap-1.5"
+              disabled={markSent.isPending}
+              onClick={openAndMarkSent}
+            >
+              <MessageCircle className="h-3.5 w-3.5" /> Open &amp; Send <Kbd>Enter</Kbd>
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-8 gap-1.5 border-border"
+              disabled={markFailed.isPending}
+              onClick={skipCurrent}
+            >
+              <SkipForward className="h-3.5 w-3.5" /> Skip <Kbd>S</Kbd>
+            </Button>
+            {lastMarked && (
+              <Button
+                size="sm"
+                variant="ghost"
+                className="h-8 gap-1.5 text-muted-foreground"
+                disabled={markPending.isPending}
+                onClick={undoLast}
               >
-                <Button size="sm" variant="outline" className="h-7 gap-1 border-border text-[11px]">
-                  <MessageCircle className="h-3 w-3" /> Open
-                </Button>
-              </a>
+                <Undo2 className="h-3.5 w-3.5" /> Undo "{lastMarked.name}" <Kbd>Ctrl+Z</Kbd>
+              </Button>
             )}
           </div>
         </div>
-      ))}
+      ) : (
+        <p className="rounded-md border border-success/30 bg-success/5 p-3 text-xs text-success">
+          All {total} recipients handled.
+        </p>
+      )}
     </div>
   );
 }

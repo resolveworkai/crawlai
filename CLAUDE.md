@@ -251,6 +251,25 @@ on this status for a deploy decision.
   old 5s default) → POST again on the same connection both returned 201. If this exact symptom
   reappears (connection reset, zero backend log line for that request), check this setting first
   before assuming an application bug.
+- **WhatsApp automation reliability fixes + Automation/Manual send split (2026-07-28,
+  `md/MARKETING.md`)**: the operator's WhatsApp account got restricted by WhatsApp's own anti-spam
+  system for automated/bulk messaging. Before that happened, a chain of real bugs in
+  `backend/whatsapp-sender/` were found and fixed while debugging why sends weren't going
+  through: a login-readiness selector that matched the QR screen as "ready" (login never actually
+  persisted), zombie Chromium processes left holding the profile lock after an abrupt kill (silent
+  `about:blank` hang on the next launch), no flush-before-close (WhatsApp's session lives in lazily-
+  written IndexedDB), a missing composer-focus click before `Enter` (messages silently stayed
+  drafts), an unhandled "Continue to Chat" interstitial for first-time numbers, and a double-decode
+  in `campaignRunner.ts` (`decodeURIComponent()` on an already-decoded `URLSearchParams.get()`
+  value) that crashed on any message containing a bare `%`. `npm run agent` now runs under
+  `tsx watch` so a long-running process can't keep serving pre-fix code. Full list + root causes:
+  `md/MARKETING.md`'s WhatsApp browser automation section. **After** the restriction, since
+  automation now carries real risk, the WhatsApp send step's UI was split into two clearly labeled
+  sections — amber "AUTOMATION (ban risk)" (unchanged) and green "MANUAL (zero risk)": a new
+  `ManualSendPanel` fast keyboard-driven single-recipient flow (`Enter`=open+mark sent via
+  `web.whatsapp.com` not `wa.me`, `S`=skip, `Ctrl+Z`=undo via a new `mark-pending` endpoint), all
+  three status mutations optimistic for instant advance. Verified live in a real browser against the
+  running Docker stack, not just automated tests.
 - **Known follow-up, not yet done**: `supabase/` (CLI config + old Lovable-era migrations) is dead
   weight left over from the original scaffold — the real schema is `db/migrations/*.sql` via
   node-pg-migrate. Safe to delete, just hasn't been done. Prod deployment target (which host, TLS

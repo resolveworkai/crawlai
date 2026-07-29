@@ -103,6 +103,7 @@ business type.
 | `GET /marketing/campaigns/:id/vcard` | download the `.vcf` (contacts by business name) |
 | `GET /marketing/campaigns/:id/export` | Excel report (Summary / Recipients / Failed-only sheets) |
 | `POST /marketing/campaigns/:id/recipients/:rid/mark-sent` \| `.../mark-failed` | WhatsApp: mark after the operator (or the automation agent) sends/fails |
+| `POST /marketing/campaigns/:id/recipients/:rid/mark-pending` | WhatsApp: undo — reverts to `pending`, clears `sent_at`/`error`. Used by the manual flow's Ctrl+Z (a misclick marks sent immediately, with no confirm step, so undo is the correction) |
 | `GET/POST/DELETE /marketing/suppressions` · public `GET /unsubscribe` | opt-out management |
 
 ## Config / deps
@@ -115,10 +116,31 @@ graph). New env: `MESSAGING_ENCRYPTION_KEY` (optional; gates email credentials) 
 
 `src/routes/marketing.tsx` (tabs WhatsApp | Email; 3 steps: Recipients [+ "Add business" / saved
 Contacts] → Message [template picker w/ recommendations, attachments] → Send [report download,
-Failed panel, and for WhatsApp: the automated-send panel]) · `src/routes/marketing.campaigns.tsx`
-(history) · `src/hooks/useMarketing.ts` (main backend API) · `src/hooks/useWhatsappAgent.ts` (talks
-directly to the local automation agent at `127.0.0.1:8787` — a *different* process from the main
-backend; "agent not detected" is the expected default state, not an error).
+Failed panel, and for WhatsApp: two visually distinct sections, see below]) ·
+`src/routes/marketing.campaigns.tsx` (history) · `src/hooks/useMarketing.ts` (main backend API) ·
+`src/hooks/useWhatsappAgent.ts` (talks directly to the local automation agent at `127.0.0.1:8787` —
+a *different* process from the main backend; "agent not detected" is the expected default state,
+not an error).
+
+**WhatsApp send step — Automation vs Manual (2026-07-28)**: the local browser agent got the
+operator's WhatsApp account rate-restricted for automated/bulk-messaging patterns, so the send step
+now makes the risk tradeoff visually explicit rather than presenting both paths as equally safe:
+- **AUTOMATION** (amber border, "ban risk" badge) — the existing `AutomatedSendPanel`, unchanged.
+- **MANUAL** (green border, "zero risk" badge) — `ManualSendPanel`, a fast keyboard-driven
+  single-recipient flow replacing the old scroll-and-click-per-row list. "Current" is just the
+  first `pending` recipient in the already-fetched list — no local index, so advancing is just
+  "the cache updated." `Enter`/`Space` opens `web.whatsapp.com/send` (not `wa.me` — stays in one
+  tab, no app-picker interstitial; converted client-side by `src/lib/waWebLink.ts`'s
+  `toWebWhatsAppUrl()`, which reads the wa.me link's already-decoded `text` param **once** and
+  re-encodes it — this exact double-decode shape is what broke `whatsapp-sender`'s
+  `campaignRunner.ts` on any message containing a bare `%`, so the helper is unit-tested against
+  that regression) and marks the recipient sent immediately (no separate confirm step — a deliberate
+  product decision, since round-tripping a confirm click per message defeats the point of "fast").
+  `S` skips a bad number. `Ctrl+Z` undoes the last one via the new `mark-pending` endpoint. All three
+  actions are optimistic (`useMarkRecipientSent/Failed/Pending` in `useMarketing.ts` share one
+  `onMutate`/`onError`/`onSettled` helper) so the UI advances the instant a key is pressed, not
+  after a network round-trip. The keydown listener copies the guard-against-typing pattern from
+  `src/components/ui/sidebar.tsx`'s shortcut — the only other global hotkey in the app.
 
 ## WhatsApp browser automation — `backend/whatsapp-sender/`
 
@@ -129,6 +151,29 @@ operator's direct, watchable control rather than running unattended on a shared 
 
 - `waSession.ts` — a **visible** (headed, never headless) Playwright Chromium session, persistent
   profile (`.whatsapp-sender-profile/`, gitignored) so the QR-code login is a one-time cost.
+  **Reliability fixes (2026-07-28)**, found chasing a login that never persisted and sends that
+  silently stayed drafts:
+  - Login readiness used to wait on a selector that matched *either* the logged-in chat list *or*
+    the QR canvas — a QR screen counted as "ready," so the code navigated away mid-scan and the
+    login never actually completed. Now waits for the chat list only; a genuine QR screen gets its
+    own longer `QR_TIMEOUT_MS` wait with operator-facing console instructions.
+  - `open()` now kills any zombie process still holding the profile directory before launching
+    (`killOrphanedBrowsers`, lockfile-gated so the normal case pays nothing) — an abruptly-killed
+    run used to leave Chromium holding the lock, and the next launch would silently hand off to the
+    zombie and exit, leaving a dead `about:blank` window with no error.
+  - `close()` now waits ~2s before tearing down the context — WhatsApp's login lives in lazily-
+    flushed IndexedDB; tearing down instantly could drop those writes, which is part of why logins
+    weren't sticking.
+  - `sendTo()` now detects and clicks through WhatsApp's "Continue to Chat" interstitial (shown for
+    any number with no prior chat history) before waiting for the composer — previously this just
+    timed out with no useful signal.
+  - The actual send in `sendCurrentChat()` now clicks the composer to focus it (a bare
+    `keyboard.press("Enter")` fires at whatever has focus, which often wasn't the composer — the
+    root cause of messages silently staying drafts) and polls for the composer to empty as proof
+    the message actually left, throwing instead of reporting a false success if it didn't.
+  - `sendToGroup()` — sends to a WhatsApp **group** by exact chat name (groups have no phone number,
+    so the `?phone=` URL trick doesn't apply; searches the chat list, opens the match, types via
+    Shift+Enter so newlines don't send early). Exposed via `npm run test-send -- --group "Name"`.
 - `rateLimiter.ts` — randomized delay between sends + a persisted daily send cap
   (`.whatsapp-sender-state.json`, gitignored, rolls over at local midnight) — a fixed cadence is
   trivially fingerprinted as automation.
@@ -137,6 +182,13 @@ operator's direct, watchable control rather than running unattended on a shared 
   the manual UI already uses, no separate tracking.
 - `campaignRunner.ts` — the shared send loop (used by both the CLI and the agent so they can't
   drift): fetch pending → rate-limit → send → record outcome → repeat, with cooperative stop support.
+  `decodeWaLinkText()` used to call `decodeURIComponent()` a second time on a value
+  `URLSearchParams.get()` had already decoded — any message containing a bare `%` (e.g. "100% off")
+  threw `URI malformed` before the browser was even touched. Fixed by reading the value once.
+- `agent.ts` runs under `tsx watch` (`npm run agent`, `agent:no-watch` for the old non-reloading
+  behavior) so a long-running agent process can't keep silently serving pre-fix code after a file
+  changes on disk — this exact staleness cost a full debugging cycle (a bug fixed on disk at 11:06
+  looked identical to a live bug because the agent process had booted at 10:48).
 - `trialSend.ts` / `testSend.ts` — **run this before ever pointing the automation at real leads.**
   Sends one message to `TEST_PHONE_NUMBER` (default `+919560397112`) with no campaign/API involved,
   to confirm the browser automation itself actually works.

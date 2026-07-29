@@ -131,8 +131,10 @@ export async function setRecipientStatus(
   const { rows } = await pool.query<CampaignRecipient>(
     // Bind $2 as plain text (deduced from the `$2 = 'sent'` comparison) and cast it to the enum in
     // the SET — otherwise PG deduces two conflicting types for the same parameter (enum vs text).
+    // Reverting to 'pending' (the manual-send undo flow) clears sent_at too, so a corrected row
+    // doesn't keep a stale timestamp from the send that's being undone.
     `UPDATE campaign_recipients SET status = $2::recipient_status, error = $3,
-        sent_at = CASE WHEN $2 = 'sent' THEN now() ELSE sent_at END
+        sent_at = CASE WHEN $2 = 'sent' THEN now() WHEN $2 = 'pending' THEN NULL ELSE sent_at END
       WHERE id = $1 RETURNING *`,
     [recipientId, status, error],
   );

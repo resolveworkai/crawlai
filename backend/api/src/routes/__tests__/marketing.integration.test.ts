@@ -196,6 +196,32 @@ describe("templates + campaign + whatsapp", () => {
     expect(fail.body.recipient.error).toBe("chat did not load");
     expect(fail.body.campaign.failed_count).toBe(1);
   });
+
+  it("mark-pending undoes a mark-sent — clears sent_at and the campaign count (fast manual-send undo)", async () => {
+    const campaign = await operatorAgent.post("/marketing/campaigns").send({
+      channel: "whatsapp",
+      body: "Hi {business_name}!",
+      recipients: [
+        { businessName: "Gym D", businessType: "Gym", location: "Chennai", phone: "+914444444444", email: null },
+      ],
+    });
+    expect(campaign.status).toBe(201);
+    const campaignId = campaign.body.campaign.id as string;
+    cleanupCampaignIds.push(campaignId);
+
+    const detail = await operatorAgent.get(`/marketing/campaigns/${campaignId}`);
+    const rid = detail.body.recipients[0].id as string;
+
+    const mark = await operatorAgent.post(`/marketing/campaigns/${campaignId}/recipients/${rid}/mark-sent`);
+    expect(mark.status).toBe(200);
+    expect(mark.body.recipient.sent_at).not.toBeNull();
+
+    const undo = await operatorAgent.post(`/marketing/campaigns/${campaignId}/recipients/${rid}/mark-pending`);
+    expect(undo.status).toBe(200);
+    expect(undo.body.recipient.status).toBe("pending");
+    expect(undo.body.recipient.sent_at).toBeNull();
+    expect(undo.body.campaign.sent_count).toBe(0);
+  });
 });
 
 describe("contacts (manually-added, reusable)", () => {

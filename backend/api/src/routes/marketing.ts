@@ -438,6 +438,22 @@ marketingRouter.post(
   },
 );
 
+// WhatsApp: undoes a mark-sent/mark-failed — the fast manual-send UI marks a recipient the instant
+// the operator clicks (no round-trip confirmation), so a misclick needs a one-step correction back
+// to 'pending' rather than being stuck.
+marketingRouter.post(
+  "/marketing/campaigns/:id/recipients/:rid/mark-pending",
+  requireAuth,
+  requireRole("operator"),
+  validate(campaignRecipientParamsSchema, "params"),
+  async (req, res) => {
+    const recipient = await setRecipientStatus(req.params.rid as string, "pending");
+    if (!recipient || recipient.campaign_id !== req.params.id) throw new NotFoundError("Recipient not found");
+    const campaign = await refreshCampaignCounts(req.params.id as string);
+    res.json({ recipient, campaign });
+  },
+);
+
 // --- suppressions ---
 marketingRouter.get("/marketing/suppressions", requireAuth, async (_req, res) => {
   res.json({ suppressions: await listSuppressions() });
