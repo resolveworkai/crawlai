@@ -115,6 +115,7 @@ function EcomCrawl() {
   const [query, setQuery] = useState("");
   const [sortMode, setSortMode] = useState<EcomSortMode>("rating_desc");
   const [maxPages, setMaxPages] = useState(3);
+  const [maxProducts, setMaxProducts] = useState(90);
   const [detailScrapeTopN, setDetailScrapeTopN] = useState(0);
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [selectedId, setSelectedId] = useState<string | undefined>(undefined);
@@ -162,6 +163,7 @@ function EcomCrawl() {
         query: query.trim(),
         sortMode,
         maxPages,
+        maxProducts,
         detailScrapeTopN,
       },
       {
@@ -184,7 +186,7 @@ function EcomCrawl() {
       subtitle="Search a marketplace's results pages, capture pricing/ratings/badges, then score each product's market opportunity. Runs one job at a time."
     >
       <Card className="border-border bg-card p-5">
-        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
           <div>
             <label className="text-xs text-muted-foreground">Platform</label>
             <Select value={platform} onValueChange={(v) => setPlatform(v as EcomPlatform)}>
@@ -247,6 +249,21 @@ function EcomCrawl() {
               max={10}
               value={maxPages}
               onChange={(e) => setMaxPages(Math.min(10, Math.max(1, Number(e.target.value) || 1)))}
+              className="mt-1 h-9 bg-input"
+            />
+          </div>
+          <div>
+            <label className="text-xs text-muted-foreground">
+              Max records <span className="text-[10px]">(1–500)</span>
+            </label>
+            <Input
+              type="number"
+              min={1}
+              max={500}
+              value={maxProducts}
+              onChange={(e) =>
+                setMaxProducts(Math.min(500, Math.max(1, Number(e.target.value) || 1)))
+              }
               className="mt-1 h-9 bg-input"
             />
           </div>

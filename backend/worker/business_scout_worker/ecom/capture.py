@@ -174,8 +174,9 @@ class EcomCaptureEngine:
                         raise EcomInterruptedError
 
                     url = self._adapter.search_url(query, sort, page_num)  # type: ignore[arg-type]
-                    await page.goto(url, wait_until="domcontentloaded")
+                    await self._goto_with_download_retry(page, url)
                     await self._adapter.prepare_page(page)
+                    await self._wait_for_cards(page)
 
                     if await self._adapter.is_blocked(page):
                         await page.screenshot(path=str(self._job_dir / "debug_blocked.png"))
@@ -290,6 +291,42 @@ class EcomCaptureEngine:
             end_reason=end_reason,
             items=items,
         )
+
+    async def _goto_with_download_retry(self, page: Page, url: str) -> None:
+        """`page.goto` occasionally raises "Download is starting" against amazon.ae — confirmed
+        2026-08-07 (reproducible across retries for a specific query+sort combo); a plain `curl`
+        of the SAME url returns a normal 200 HTML page, so this is specific to what Chromium's
+        navigation sees, not the URL itself — most plausibly Amazon's anti-bot layer serving a
+        one-off trap response to that particular browser fingerprint/session. One retry (fresh
+        navigation, same URL) has been enough in testing; if it recurs the second attempt's
+        exception propagates and the job fails cleanly (pipeline.py's generic handler), same as
+        any other unrecoverable capture error — this is NOT a silent-swallow, just a bounded retry
+        for a known-transient case."""
+        try:
+            await page.goto(url, wait_until="domcontentloaded")
+        except Exception as exc:
+            if "download is starting" not in str(exc).lower():
+                raise
+            logger.warning("goto hit a download trap, retrying once", url=url, error=str(exc))
+            await page.wait_for_timeout(1500)
+            await page.goto(url, wait_until="domcontentloaded")
+
+    async def _wait_for_cards(self, page: Page) -> None:
+        """Bounded wait for the FIRST product card to appear before we check is_blocked/count
+        cards. `wait_until="domcontentloaded"` fires before a client-rendered SPA (noon, in
+        particular — its data-qa attributes only exist post-hydration) has painted any results,
+        so checking immediately raced the render and intermittently produced a false
+        `end_of_results` on an otherwise-normal page (confirmed 2026-08-07: a fresh "yoga mat"
+        noon search returned 0 cards from the pipeline but 62 from the same URL loaded manually
+        with a few seconds' wait). Times out silently — a genuinely empty results page (or a
+        CAPTCHA wall the `is_blocked` check catches right after) must still proceed, not raise."""
+        selectors = [s for s in (self._adapter.CARD_SELECTOR, *self._adapter.BLOCK_SELECTORS) if s]
+        if not selectors:
+            return
+        try:
+            await page.wait_for_selector(", ".join(selectors), timeout=8000, state="attached")
+        except Exception as exc:  # noqa: BLE001 - a timeout here is a normal "no results" case
+            logger.debug("no card selector appeared within wait window", error=str(exc))
 
     async def _find_cards(self, page: Page) -> list[ElementHandle]:
         selectors = (self._adapter.CARD_SELECTOR, *self._adapter.BLOCK_SELECTORS)
