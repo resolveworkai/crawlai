@@ -1,0 +1,249 @@
+<!-- Authored by: Mohit Singh -->
+
+# Product Research (Ecom-Crawl) module
+
+Given a **platform** (noon.com/uae-en or amazon.ae) + a **search query** (e.g. "yoga mat",
+"adjustable dumbbells"), this module drives a real Chromium against that platform's search-results
+page, walks the result cards page by page, reads whatever structured fields the card's own DOM
+exposes (title, price, rating, review count, badges, sponsored flag, …), and OCRs (Tesseract) a
+screenshot of each card as a fallback for whatever the DOM didn't expose. Every product is then
+scored with a deterministic "opportunity score" (reviews + rating + demand + price-value, all
+weighted) so the result table can be sorted to surface the most promising products for the given
+query. Results are a sortable table with CSV/XLSX/JSON export.
+
+It is a **parallel job type**, architecturally identical to the Crawl-OCR (Google Maps) module and
+the main Overpass crawler — Node inserts an `ecom_jobs` row + `pg_notify`, the Python worker claims
++ drives it, results land in `ecom_products`. Nothing in the OCR/Maps module or the main crawler is
+touched by this one.
+
+## Deliberately separate from Crawl (OCR) — own everything, shared utilities only
+
+This module and the Crawl-OCR (Google Maps) module look similar (DOM-first + OCR-fallback +
+CSV/XLSX export, resumable retry, single-running-job policy) but are **fully separate code and
+data**:
+
+| | Crawl (OCR) — Google Maps | Product Research (Ecom-Crawl) |
+|---|---|---|
+| DB tables | `ocr_jobs`, `ocr_businesses`, `ocr_logs` | `ecom_jobs`, `ecom_products`, `ecom_logs` |
+| `pg_notify` channel | `ocr_crawl_jobs` | `ecom_crawl_jobs` |
+| Worker package | `business_scout_worker/ocr/` | `business_scout_worker/ecom/` |
+| API routes | `/api/ocr-crawl/*` | `/api/ecom-crawl/*` |
+| Storage dir | `OCR_CAPTURES_DIR` (`./storage/ocr_captures`) | `ECOM_CAPTURES_DIR` (`./storage/ecom_captures`) |
+
+The **only** things this module reuses from the OCR/Maps side are genuinely site-agnostic worker
+utilities: `ocr_engine.py` (Tesseract wrapper + `merge_segments` overlap-stitching),
+`preprocess.py`, `humanize.py` (dwell/scroll pacing), the shared `Settings`, and the shared DB pool.
+No `ocr_*` table, route, or business-logic module is imported by or imports from `ecom/`.
+
+## Platforms
+
+| Platform | Status | Adapter |
+|---|---|---|
+| `noon` (noon.com/uae-en) | Implemented | `ecom/adapters/noon.py` |
+| `amazon` (amazon.ae) | Implemented | `ecom/adapters/amazon.py` |
+| `aliexpress` | **Reserved, not selectable** | `ecom/adapters/aliexpress.py` (stub — every method raises `NotImplementedError`) |
+
+AliExpress is registered in the adapter registry (`ecom/adapters/__init__.py`'s `_REGISTRY`) and is
+a valid value in the `ecom_jobs.platform` DB `CHECK` constraint and the `Platform` type — but the
+API's `createEcomJobSchema` (`schemas/ecomCrawl.ts`) deliberately restricts the *creatable* set to
+`["noon", "amazon"]`, so a job can never be queued against a platform whose adapter can't actually
+search or capture anything. AliExpress is reserved because its search results are far more
+aggressively bot-gated (heavy client-side rendering, frequent CAPTCHA) than noon/amazon, so it was
+shipped as a stub rather than half-working.
+
+## Pipeline stages
+
+`queued → capturing → ocr → parsing → [detail →] ready` (terminal failures: `failed` | `blocked`).
+
+| Stage | What happens |
+|---|---|
+| `queued` | Job row created, never rejected — see Queueing below |
+| `capturing` (Stage A) | `EcomCaptureEngine` (`ecom/capture.py`) walks the adapter's `search_url()` across pages, screenshots each new card, and reads whatever the adapter's `extract_card()` exposes straight from the DOM (authoritative — title/price/rating/review_count/badges/sponsored/etc). Checkpoints `manifest.json` after every captured card. |
+| `ocr` (Stage B) | For each captured product: if the DOM already has all of `title`/`price`/`rating`/`review_count` (`_dom_is_complete()` in `pipeline.py`), OCR is skipped entirely; otherwise the card screenshot(s) are OCR'd (`merge_segments`, shared with the Maps module) and `ecom/parse_product.py`'s regex parsers fill in whatever the DOM missed. DOM values always win over OCR when both are present. |
+| `parsing` (Stage C) | `ecom/analysis.py`'s `compute_opportunity_scores()` runs once over the whole batch and each product is upserted into `ecom_products` with its score. |
+| `detail` (Stage D, optional) | Only runs when the job's `detail_scrape_top_n > 0` — see "Detail-scrape" below. |
+| `ready` | Terminal success. `results.json` is rebuilt from the DB so it reflects every attempt's union, not just the last one's. |
+| `failed` / `blocked` | Terminal failure — `blocked` means the adapter's `is_blocked()` detected a CAPTCHA/robot-check wall; `failed` covers everything else (including a worker-shutdown interruption, which is retryable). |
+
+## Detail-scrape (Phase 2b) — off by default
+
+A job's `detail_scrape_top_n` (0–10, DB `CHECK`, default **0**) controls an optional Stage D that
+navigates to individual product detail pages for a deeper scrape:
+
+- **Off by default (`0`)** — no extra per-product navigation beyond the search-results pages, which
+  keeps the bot-detection surface as small as possible.
+- When `> 0`, the pipeline ranks all non-sponsored captured products by `(rating, opportunity_score)`
+  descending and takes the top N (hard-capped at `DETAIL_SCRAPE_HARD_CAP = 10` in `capture.py`
+  regardless of what's requested, defense-in-depth beyond the DB `CHECK`).
+- For each of those, `PlatformAdapter.extract_detail()` (implemented by noon and amazon; the base
+  class default raises `NotImplementedError` so aliexpress and any future non-detail-capable adapter
+  fail loudly rather than silently) reads: `description`, `about_bullets` (key highlights/feature
+  bullets), `breadcrumb_category`, and `seller_name`. These land on `ecom_products.description` /
+  `about_bullets` / `breadcrumb_category` / `seller_name`, with `detail_scraped = true` marking which
+  rows actually got the deep scrape (everything else stays `NULL`/`false`, never fabricated).
+- Progress is tracked separately via `ecom_jobs.detail_done_count` / the job's `progress.detailDone`.
+
+## Opportunity scoring (`ecom/analysis.py`)
+
+Pure, no-I/O, deterministic math — deliberately free of DB/Playwright imports so it's directly unit
+tested and portable (the same algorithm is the single source of truth; nothing re-derives it
+elsewhere). For each product:
+
+```
+reviews_n = log10(reviews + 1) / log10(max_reviews + 1)
+rating_n  = clamp((rating - 3) / 2, 0, 1)
+demand_n  = log10(bought_past_month + 1) / log10(max_bought + 1)   (0 if bought_past_month is None)
+value_n   = 1 - clamp(|price - median_price| / median_price, 0, 1)  (1.0 if price or median_price
+            is missing/0 — "no penalty" rather than a division error)
+
+score = 100 * (w.reviews * reviews_n + w.rating * rating_n + w.demand * demand_n + w.value * value_n)
+```
+
+- **Default weights** (`DEFAULT_WEIGHTS`): `reviews 0.35`, `rating 0.25`, `demand 0.25`, `value 0.15`.
+- **Override per job** via `scoreWeights` on job creation (`POST /ecom-crawl/jobs`) — a partial
+  object (`{reviews?, rating?, demand?, value?}`, each `0..1`); any key not supplied falls back to
+  the worker's own default for that key (missing keys are `w.get(key, 0.0)` inside the score sum, so
+  an omitted key contributes nothing rather than the default weight — pass the full set of weights
+  you want honored).
+- **Sponsored rows are excluded from the batch's denominators** (`max_reviews`, `max_bought`,
+  `median_price` are computed over non-sponsored rows only, so a paid placement doesn't skew what
+  "competitive" looks like) but a sponsored row is still scored using those same denominators — its
+  own opportunity is still worth showing, and because `reviews_n`/`demand_n` are **not clamped to
+  1.0**, a sponsored product with review/bought counts far above the organic max can legitimately
+  score higher than 100 * (its weighted components alone would suggest) on those two components.
+- `build_summary()` aggregates already-scored products (it never recomputes scores) into the
+  `/analysis` endpoint's payload: price min/p25/median/p75/max, rating avg/median, review-count
+  total/median, bought-past-month count/sum, free-delivery %, badge frequency (top 20), and the
+  top-10 products by `opportunity_score`.
+
+## Storage
+
+`ECOM_CAPTURES_DIR/<jobId>/{manifest.json, results.json, raw/*.png}` — mirrors the OCR module's
+layout exactly (env var default `./storage/ecom_captures`, worker `settings.ecom_captures_dir`,
+Node `config.ECOM_CAPTURES_DIR`, both defaulting to the same path).
+
+## Queueing, resumable retry, single-running policy
+
+Identical policy to Crawl (OCR), reimplemented on the `ecom_*` tables:
+
+- `POST /api/ecom-crawl/jobs` never rejects — a new job is created `queued` and the worker's claim
+  loop (oldest `created_at` first, `FOR UPDATE SKIP LOCKED`) auto-runs it once whatever's ahead
+  finishes. The response includes `queuePosition` (jobs already queued ahead).
+- Only **actively running** work (`capturing`/`ocr`/`parsing`/`detail`) is capped at one at a time
+  (`ux_ecom_jobs_single_running` partial unique index) — any number of jobs may sit `queued`. The
+  worker daemon (`main.py`) is sequential across job types too: one process, one browser session
+  total, `ecom` and `ocr` claims interleave rather than running concurrently.
+- **Retry** (`POST /ecom-crawl/jobs/:id/retry`, capped at `MAX_ECOM_RETRIES = 3`, `db/ecomJobs.ts`)
+  reuses the same job row/`storage_dir` and resumes from `manifest.json` rather than starting over —
+  `run_ecom_job()` (`pipeline.py`) loads any prior manifest, seeds already-captured items so they're
+  never re-navigated, and Stage B skips indices already present in `ecom_products`
+  (`get_ecom_done_indices`, idempotent upsert either way).
+- Partial results always survive: `/results`, `/analysis`, and `/export` never gate on job status —
+  a `failed`/`blocked` job still has whatever it captured fully viewable/exportable.
+
+## Config / env vars
+
+Worker (`business_scout_worker/settings.py`):
+
+| Var | Default | Purpose |
+|---|---|---|
+| `ECOM_CAPTURES_DIR` | `./storage/ecom_captures` | On-disk capture root |
+| `ECOM_HEADLESS` | `true` | Headless Chromium (set `false` locally to watch the browser) |
+| `ECOM_NAV_TIMEOUT_MS` | `45000` | Per-navigation timeout |
+| `ECOM_DEVICE_SCALE` | `2` | Screenshot DPI multiplier — same OCR-readability rationale as the Maps module: never zoom out, it shrinks glyphs and wrecks OCR |
+
+Node (`backend/api/src/config.ts`):
+
+| Var | Default | Purpose |
+|---|---|---|
+| `ECOM_CAPTURES_DIR` | `./storage/ecom_captures` | Must match the worker's value — both processes read/write the same job folders |
+
+Shared with the OCR module (not reconfigured per-module): `TESSERACT_CMD`, `OMP_THREAD_LIMIT`,
+`OCR_CONCURRENCY` — see `md/OCR_CRAWL.md`'s "OCR-readability core & performance" section.
+
+## How to run a job
+
+1. `POST /api/ecom-crawl/jobs` with `{ platform: "noon" | "amazon", query, sortMode?, maxPages?,
+   maxProducts?, detailScrapeTopN?, scoreWeights? }` (all optional fields have DB/schema defaults —
+   see `schemas/ecomCrawl.ts`). Requires `operator` role.
+2. Poll `GET /api/ecom-crawl/jobs/:id` (`{ job, progress: { total, captured, ocrDone, detailDone } }`)
+   until `status === "ready"` (or a terminal failure).
+3. `GET /api/ecom-crawl/jobs/:id/results` for the raw rows, or `GET
+   /api/ecom-crawl/jobs/:id/analysis` for the scored summary.
+4. `GET /api/ecom-crawl/jobs/:id/export?format=csv|xlsx|json` to download.
+5. On `failed`/`blocked`, `POST /api/ecom-crawl/jobs/:id/retry` (up to 3 times) to resume.
+
+## API
+
+| Route | Behavior |
+|---|---|
+| `POST /api/ecom-crawl/jobs` | `{platform, query, sortMode?, maxPages?, maxProducts?, detailScrapeTopN?, scoreWeights?}` → `{job, queuePosition}` — never rejected, queues behind any job already running. `operator` role required. |
+| `POST /api/ecom-crawl/jobs/:id/retry` | Resumable retry of a `failed`/`blocked` job (capped at 3) → `{job, queuePosition}`. `operator` role required. |
+| `GET /api/ecom-crawl/jobs` | List all jobs |
+| `GET /api/ecom-crawl/jobs/:id` | Status + `{progress: {total, captured, ocrDone, detailDone}}` (poll) |
+| `GET /api/ecom-crawl/jobs/:id/results` | Parsed product rows (`{products}`) — never gated on job status |
+| `GET /api/ecom-crawl/jobs/:id/analysis` | Scored summary (`{analysis}` — see `build_summary()` above) — never gated on job status |
+| `GET /api/ecom-crawl/jobs/:id/export?format=csv\|xlsx\|json` | Download (xlsx via exceljs — never the vulnerable `xlsx` npm package; `json` is a format this module has that the OCR export deliberately doesn't) |
+| `GET /api/ecom-crawl/jobs/:id/images/*` | A captured screenshot (read-only, path-traversal-guarded, 404 after retention purge) |
+| `DELETE /api/ecom-crawl/jobs/:id` | Remove DB rows (cascades to `ecom_products`/`ecom_logs`) + the on-disk job folder. `operator` role required. |
+
+## Architecture & files
+
+| Layer | Files |
+|---|---|
+| Schema | `db/migrations/1785000000000_ecom-crawl.sql` — `ecom_jobs`, `ecom_products`, `ecom_logs` (own FKs, single-running partial-unique index) |
+| Node API | `routes/ecomCrawl.ts`, `db/ecomJobs.ts` + `db/ecomProducts.ts`, `services/ecomExportService.ts` + `services/ecomAnalysisService.ts`, `schemas/ecomCrawl.ts` |
+| Worker models | `business_scout_worker/ecom/models.py` (`EcomJob`, `DomProductFields`, `CapturedProduct`, `EcomManifest`, `DomDetailFields`, `ParsedProduct`) |
+| Worker (Stage A capture) | `ecom/capture.py` (`EcomCaptureEngine`) |
+| Worker (adapters) | `ecom/adapters/base.py` (`PlatformAdapter` contract), `ecom/adapters/noon.py`, `ecom/adapters/amazon.py`, `ecom/adapters/aliexpress.py` (stub), `ecom/adapters/__init__.py` (`get_adapter` registry) |
+| Worker (Stage B parse) | `ecom/parse_product.py` |
+| Worker (Stage C scoring) | `ecom/analysis.py` (`compute_opportunity_scores`, `build_summary`) |
+| Worker orchestration | `ecom/pipeline.py` (`run_ecom_job`), `ecom/jobs.py` (DB access + `write_log`), wired into `main.py` (LISTEN `ecom_crawl_jobs`) |
+| Tests | `backend/worker/tests/test_ecom_parse.py`, `test_ecom_adapters.py`, `test_ecom_analysis.py`; `backend/api/src/services/ecomExportService.test.ts` |
+
+## Known risks / where to look first
+
+- **amazon.ae bot detection**: Amazon serves a CAPTCHA (`#captchacharacters`) far more readily than
+  noon under sustained automated traffic. `AmazonAdapter.is_blocked()` checks for it and the
+  `_CAPTCHA_TEXT` body-text signal; if a job is unexpectedly `blocked` on amazon, check there first.
+- **noon's sort-key mapping — CONFIRMED CORRECT (2026-08-07)**: `NoonAdapter.search_url()`'s
+  `sort[by]=best_rating&sort[dir]=desc` param was live-verified against `noon.com/uae-en/search/`
+  — the page's own "Sort By" control shows "Best Rated" selected when this URL is loaded. No
+  longer an open risk; `price_asc`/`price_desc`/`relevance` remain unverified by the same standard
+  (implemented from the same observed URL-shape pattern, not yet confirmed against a live page).
+- **noon's card-field selectors — PARTIALLY FIXED (2026-08-07), rating/review/badges still stale**:
+  a live captured card DOM (real inspect-element dump against a `camera` search) showed the
+  original `title`/`price` `data-qa` guesses (`product-name`/`product-price`) were wrong — noon
+  actually uses `plp-product-box-name`/`plp-product-box-price`. Fixed in `noon.py`, confirmed
+  against the real sample (`"199"` → price 199.0, `"4.6"` → rating 4.6). **Still unconfirmed / most
+  likely still broken**: `rating`/`review_count` have **no `data-qa` hook at all** in the observed
+  markup — matched instead via the CSS-module class-name *prefix* (`_textCtr_`/`_countCtr_`, the
+  stable part of noon's per-build-hashed class names), which is a best-effort, not a verified-
+  stable signal; and `badges` (rank-in-category, stock-scarcity, delivery-speed nudges) come from
+  a `_nudgeText_` marquee strip, not the `data-qa="pick-badge"`/`class*="badge"` guesses the code
+  shipped with. If `extract_card()` still returns mostly-null rating/review_count/badges in
+  practice, re-inspect a live card DOM before trusting the class-prefix match — CSS-module tooling
+  occasionally reshuffles the source class name itself (not just its hash suffix) on a larger
+  refactor. The OCR fallback (screenshot audit trail → Tesseract → `parse_product.py`) is what
+  currently backstops this gap in production, not a guarantee it always will.
+- **Selector fragility (amazon, and noon beyond what's confirmed above)**: card/field selectors
+  carry 2-3 fallbacks each (role/aria/data-qa-over-class-name, mirroring `ocr/selectors.py`'s
+  philosophy) but e-commerce SPA class names drift. If `extract_card()` starts returning
+  mostly-empty `DomProductFields` (pushing everything onto the OCR fallback and inflating
+  `needs_review` rates), the adapter file for that platform is the first place to check, then
+  re-run a small job to see the live DOM (`backend/worker/smoke_ecom.py` is an untracked ad hoc
+  script for exactly this — bypasses the DB/queue, prints extracted fields for the first several
+  cards of one query per platform).
+- **`parse_product.py`'s regex coverage is intentionally narrow** — see the test suite
+  (`test_ecom_parse.py`) for documented gaps: review/bought-count "K"-suffix formats (e.g. "1.7K",
+  "1K+") and dash-style discount badges (e.g. "-13%") are not recognized by the current regexes.
+  **Note this is a *different* code path from the noon `_parse_review_count` fix above** —
+  `parse_product.py` only runs on OCR'd screenshot text (Stage B fallback); noon's own
+  `_parse_review_count` (in `noon.py`, DOM-extraction path) was separately fixed to handle the
+  "23.7K" K/M-suffix format noon actually renders, confirmed against the real sample above. The
+  OCR-side K-suffix gap remains open — matters only when noon's DOM selectors miss the field.
+- **amazon.ae review-count/"bought in past month" not yet confirmed present on real listings**: the
+  2026-08-07 live Amazon run (8 real "camera" results, correct titles/prices/ratings/review counts/
+  free-delivery flags, `product_url`/ASIN extraction all correct, sort order verified
+  non-increasing) never actually observed a "bought in past month" badge on any sampled product —
+  so that field's extraction logic is implemented but has zero live confirmation either way.

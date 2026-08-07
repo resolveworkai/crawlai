@@ -16,6 +16,7 @@ import { Route as LoginRouteImport } from './routes/login'
 import { Route as JobsRouteImport } from './routes/jobs'
 import { Route as FieldsRouteImport } from './routes/fields'
 import { Route as ExportsRouteImport } from './routes/exports'
+import { Route as EcomCrawlRouteImport } from './routes/ecom-crawl'
 import { Route as DiscoverRouteImport } from './routes/discover'
 import { Route as BusinessesRouteImport } from './routes/businesses'
 import { Route as IndexRouteImport } from './routes/index'
@@ -56,6 +57,11 @@ const ExportsRoute = ExportsRouteImport.update({
   path: '/exports',
   getParentRoute: () => rootRouteImport,
 } as any)
+const EcomCrawlRoute = EcomCrawlRouteImport.update({
+  id: '/ecom-crawl',
+  path: '/ecom-crawl',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const DiscoverRoute = DiscoverRouteImport.update({
   id: '/discover',
   path: '/discover',
@@ -81,6 +87,7 @@ export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/businesses': typeof BusinessesRoute
   '/discover': typeof DiscoverRoute
+  '/ecom-crawl': typeof EcomCrawlRoute
   '/exports': typeof ExportsRoute
   '/fields': typeof FieldsRoute
   '/jobs': typeof JobsRoute
@@ -94,6 +101,7 @@ export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/businesses': typeof BusinessesRoute
   '/discover': typeof DiscoverRoute
+  '/ecom-crawl': typeof EcomCrawlRoute
   '/exports': typeof ExportsRoute
   '/fields': typeof FieldsRoute
   '/jobs': typeof JobsRoute
@@ -108,6 +116,7 @@ export interface FileRoutesById {
   '/': typeof IndexRoute
   '/businesses': typeof BusinessesRoute
   '/discover': typeof DiscoverRoute
+  '/ecom-crawl': typeof EcomCrawlRoute
   '/exports': typeof ExportsRoute
   '/fields': typeof FieldsRoute
   '/jobs': typeof JobsRoute
@@ -123,6 +132,7 @@ export interface FileRouteTypes {
     | '/'
     | '/businesses'
     | '/discover'
+    | '/ecom-crawl'
     | '/exports'
     | '/fields'
     | '/jobs'
@@ -136,6 +146,7 @@ export interface FileRouteTypes {
     | '/'
     | '/businesses'
     | '/discover'
+    | '/ecom-crawl'
     | '/exports'
     | '/fields'
     | '/jobs'
@@ -149,6 +160,7 @@ export interface FileRouteTypes {
     | '/'
     | '/businesses'
     | '/discover'
+    | '/ecom-crawl'
     | '/exports'
     | '/fields'
     | '/jobs'
@@ -163,6 +175,7 @@ export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   BusinessesRoute: typeof BusinessesRoute
   DiscoverRoute: typeof DiscoverRoute
+  EcomCrawlRoute: typeof EcomCrawlRoute
   ExportsRoute: typeof ExportsRoute
   FieldsRoute: typeof FieldsRoute
   JobsRoute: typeof JobsRoute
@@ -223,6 +236,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ExportsRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/ecom-crawl': {
+      id: '/ecom-crawl'
+      path: '/ecom-crawl'
+      fullPath: '/ecom-crawl'
+      preLoaderRoute: typeof EcomCrawlRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/discover': {
       id: '/discover'
       path: '/discover'
@@ -270,6 +290,7 @@ const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   BusinessesRoute: BusinessesRoute,
   DiscoverRoute: DiscoverRoute,
+  EcomCrawlRoute: EcomCrawlRoute,
   ExportsRoute: ExportsRoute,
   FieldsRoute: FieldsRoute,
   JobsRoute: JobsRoute,

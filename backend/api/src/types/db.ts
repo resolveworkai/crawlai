@@ -276,6 +276,102 @@ export interface OcrBusiness {
   created_at: Date;
 }
 
+// --- Product Research / Ecom-Crawl module (db/migrations/*ecom-crawl.sql). SEPARATE from the
+// Crawl-OCR (Google Maps) module above — own tables/pg_notify channel/worker package/API
+// routes (see the migration's header comment). ---
+
+export type EcomPlatform = "noon" | "amazon" | "aliexpress";
+
+export type EcomSortMode = "rating_desc" | "price_asc" | "price_desc" | "relevance";
+
+export type EcomJobStatus =
+  | "queued"
+  | "capturing"
+  | "ocr"
+  | "parsing"
+  | "detail"
+  | "ready"
+  | "failed"
+  | "blocked";
+
+export type EcomEndReason =
+  | "end_of_results"
+  | "max_pages"
+  | "max_products"
+  | "stagnation"
+  | "blocked"
+  | "error";
+
+export interface EcomScoreWeights {
+  reviews?: number | undefined;
+  rating?: number | undefined;
+  demand?: number | undefined;
+  value?: number | undefined;
+}
+
+export interface EcomJob {
+  id: string;
+  created_by: string | null;
+  platform: EcomPlatform;
+  query: string;
+  sort_mode: EcomSortMode;
+  max_pages: number;
+  max_products: number;
+  detail_scrape_top_n: number;
+  score_weights: EcomScoreWeights | null;
+  status: EcomJobStatus;
+  end_reason: EcomEndReason | null;
+  total_count: number;
+  captured_count: number;
+  ocr_done_count: number;
+  detail_done_count: number;
+  current_product: string | null;
+  error_message: string | null;
+  storage_dir: string | null;
+  retry_count: number;
+  created_at: Date;
+  started_at: Date | null;
+  finished_at: Date | null;
+}
+
+export type EcomExtractionSource = "dom" | "dom+ocr" | "ocr";
+
+export interface EcomProduct {
+  id: string;
+  job_id: string;
+  idx: number;
+  page_num: number;
+  title: string;
+  product_url: string | null;
+  image_url: string | null;
+  price: number | null;
+  list_price: number | null;
+  currency: string;
+  discount_pct: number | null;
+  rating: number | null;
+  review_count: number | null;
+  bought_past_month: number | null;
+  bought_past_month_raw: string | null;
+  free_delivery: boolean;
+  delivery_date: string | null;
+  category: string | null;
+  badges: string[];
+  rank_in_category: number | null;
+  sponsored: boolean;
+  opportunity_score: number | null;
+  extraction_source: EcomExtractionSource;
+  ocr_confidence: number | null;
+  needs_review: boolean;
+  raw_text: string | null;
+  source_images: string[];
+  description: string | null;
+  about_bullets: string[];
+  breadcrumb_category: string | null;
+  seller_name: string | null;
+  detail_scraped: boolean;
+  created_at: Date;
+}
+
 // --- Marketing / Messaging (see md/MARKETING.md + db/migrations/*marketing.sql) ---
 
 export type MessageChannel = "whatsapp" | "email";

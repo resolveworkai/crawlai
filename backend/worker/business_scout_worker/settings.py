@@ -63,6 +63,17 @@ class Settings(BaseSettings):
     or below the container's core count minus 1 — oversubscribing degrades every call equally
     rather than speeding the batch up."""
 
+    # Product Research module (ecom/) — noon/amazon search-results capture + OCR fallback +
+    # opportunity scoring. A SEPARATE module from Crawl-OCR (ocr/) above: own storage dir, own
+    # pg_notify channel ('ecom_crawl_jobs'), own tables. Reuses tesseract_cmd/ocr_concurrency
+    # as-is (Stage B's OCR call shape is identical) rather than duplicating those two fields.
+    ecom_captures_dir: str = "./storage/ecom_captures"
+    ecom_headless: bool = True
+    ecom_nav_timeout_ms: int = Field(default=45000, gt=0)
+    ecom_device_scale: int = Field(default=2, ge=1, le=4)
+    """OCR-readability lever for the ecom card/detail screenshots — same rationale as
+    ocr_device_scale (never lower it)."""
+
 
 def load_settings() -> Settings:
     return Settings()

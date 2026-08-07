@@ -192,6 +192,143 @@ export interface OcrBusiness {
   created_at: string;
 }
 
+// --- Product Research (Ecom-Crawl) module — SEPARATE from Crawl (OCR) above. Mirrors
+// backend/api/src/types/db.ts's EcomJob/EcomProduct + services/ecomAnalysisService.ts's
+// EcomAnalysis exactly. aliexpress is a valid platform value on existing rows but is NOT
+// creatable from the frontend (see schemas/ecomCrawl.ts) — the worker's adapter is a stub. ---
+
+export type EcomPlatform = "noon" | "amazon" | "aliexpress";
+
+export type EcomSortMode = "rating_desc" | "price_asc" | "price_desc" | "relevance";
+
+export type EcomJobStatus =
+  "queued" | "capturing" | "ocr" | "parsing" | "detail" | "ready" | "failed" | "blocked";
+
+export type EcomEndReason =
+  "end_of_results" | "max_pages" | "max_products" | "stagnation" | "blocked" | "error";
+
+export interface EcomScoreWeights {
+  reviews?: number;
+  rating?: number;
+  demand?: number;
+  value?: number;
+}
+
+export interface EcomJob {
+  id: string;
+  created_by: string | null;
+  platform: EcomPlatform;
+  query: string;
+  sort_mode: EcomSortMode;
+  max_pages: number;
+  max_products: number;
+  detail_scrape_top_n: number;
+  score_weights: EcomScoreWeights | null;
+  status: EcomJobStatus;
+  end_reason: EcomEndReason | null;
+  total_count: number;
+  captured_count: number;
+  ocr_done_count: number;
+  detail_done_count: number;
+  // Live "what is it on right now" — mirrors OcrJob's current_business.
+  current_product: string | null;
+  error_message: string | null;
+  storage_dir: string | null;
+  // Resumable retry (see hooks/useEcomCrawl.ts's useRetryEcomJob) — capped server-side at 3.
+  retry_count: number;
+  created_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+}
+
+export type EcomExtractionSource = "dom" | "dom+ocr" | "ocr";
+
+export interface EcomProduct {
+  id: string;
+  job_id: string;
+  idx: number;
+  page_num: number;
+  title: string;
+  product_url: string | null;
+  image_url: string | null;
+  // NUMERIC(12,2) columns — pg returns these as strings (no custom type parser registered),
+  // same convention as CrawlJob.radius_km above. Parse with Number(...) at render time.
+  price: string | null;
+  list_price: string | null;
+  currency: string;
+  // REAL columns — pg parses these to JS numbers by default.
+  discount_pct: number | null;
+  rating: number | null;
+  review_count: number | null;
+  bought_past_month: number | null;
+  bought_past_month_raw: string | null;
+  free_delivery: boolean;
+  delivery_date: string | null;
+  category: string | null;
+  badges: string[];
+  rank_in_category: number | null;
+  sponsored: boolean;
+  opportunity_score: number | null;
+  extraction_source: EcomExtractionSource;
+  ocr_confidence: number | null;
+  needs_review: boolean;
+  raw_text: string | null;
+  source_images: string[];
+  description: string | null;
+  about_bullets: string[];
+  breadcrumb_category: string | null;
+  seller_name: string | null;
+  detail_scraped: boolean;
+  created_at: string;
+}
+
+export interface EcomAnalysisSummary {
+  productCount: number;
+  sponsoredCount: number;
+  price: {
+    min: number | null;
+    max: number | null;
+    p25: number | null;
+    median: number | null;
+    p75: number | null;
+  };
+  rating: { avg: number | null; median: number | null };
+  reviews: { total: number | null; median: number | null };
+  pctFreeDelivery: number | null;
+  boughtPastMonth: { productsWithData: number; total: number | null };
+}
+
+export interface EcomRatingBucket {
+  star: number;
+  count: number;
+}
+
+export interface EcomBadgeFrequency {
+  badge: string;
+  count: number;
+}
+
+export interface EcomTopOpportunity {
+  id: string;
+  idx: number;
+  title: string;
+  price: number | null;
+  rating: number | null;
+  reviewCount: number | null;
+  opportunityScore: number | null;
+  imageUrl: string | null;
+  productUrl: string | null;
+}
+
+export interface EcomAnalysis {
+  jobId: string;
+  summary: EcomAnalysisSummary;
+  priceBands: { p25: number | null; median: number | null; p75: number | null };
+  ratingDistribution: EcomRatingBucket[];
+  badgeFrequency: EcomBadgeFrequency[];
+  topOpportunities: EcomTopOpportunity[];
+}
+
 // --- Marketing / Messaging (see md/MARKETING.md) ---
 
 export type MessageChannel = "whatsapp" | "email";

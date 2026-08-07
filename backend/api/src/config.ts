@@ -57,6 +57,11 @@ const envSchema = z.object({
   // (DB-configurable via the Settings screen, up to 1000), enforced at request time in
   // routes/ocrCrawl.ts. This just bounds what OCR_CRAWL_MAX_RESULTS itself may be set to.
   OCR_CRAWL_MAX_RESULTS: z.coerce.number().int().positive().max(1000).default(25),
+  // Product Research (ecom-crawl) module — where captured search-result screenshots/DOM
+  // artifacts live (one subfolder per job), mirrors OCR_CAPTURES_DIR above but deliberately
+  // separate (own worker package, own storage dir — see the ecom-crawl migration's header
+  // comment). Default matches business_scout_worker/settings.py's ecom_captures_dir default.
+  ECOM_CAPTURES_DIR: z.string().min(1).default("./storage/ecom_captures"),
   // Marketing / Messaging tool — 64 hex chars (32 bytes) that encrypt the operator's SMTP
   // password at rest (AES-256-GCM, lib/messagingCrypto). Absent = email-credential save/test
   // refuse with a clear message (isEncryptionAvailable() === false), rather than the app failing

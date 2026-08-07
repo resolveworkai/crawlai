@@ -10,6 +10,7 @@ import {
   Radar,
   Download,
   Camera,
+  ShoppingCart,
   Megaphone,
   Send,
   LogOut,
@@ -34,6 +35,7 @@ const mainItems = [
   { title: "Overview", url: "/", icon: LayoutDashboard },
   { title: "Discover", url: "/discover", icon: MapPin },
   { title: "Crawl (OCR)", url: "/ocr-crawl", icon: Camera },
+  { title: "Product Research", url: "/ecom-crawl", icon: ShoppingCart },
   { title: "Businesses", url: "/businesses", icon: Building2 },
   { title: "Crawl Jobs", url: "/jobs", icon: ListChecks },
 ];

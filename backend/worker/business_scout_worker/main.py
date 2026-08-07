@@ -9,6 +9,8 @@ import psycopg
 
 from business_scout_worker import pipeline
 from business_scout_worker.db import create_pool, ping_database
+from business_scout_worker.ecom import jobs as ecom_jobs
+from business_scout_worker.ecom import pipeline as ecom_pipeline
 from business_scout_worker.enrich import tier2
 from business_scout_worker.jobs import claim_pending_job
 from business_scout_worker.logging_config import configure_logging, get_logger
@@ -35,6 +37,7 @@ async def _listen_loop(conninfo: str, wake_event: asyncio.Event, stop_event: asy
             async with await psycopg.AsyncConnection.connect(conninfo, autocommit=True) as conn:
                 await conn.execute("LISTEN crawl_jobs")
                 await conn.execute("LISTEN ocr_crawl_jobs")  # Crawl-OCR module shares this daemon
+                await conn.execute("LISTEN ecom_crawl_jobs")  # Product Research module too
                 async for _notify in conn.notifies():
                     wake_event.set()
                     if stop_event.is_set():
@@ -79,6 +82,11 @@ async def run() -> None:
         if recovered:
             logger.info("recovered orphaned ocr jobs", count=recovered)
 
+        # Same self-heal for the Product Research module — see ecom/jobs.py.
+        ecom_recovered = await ecom_jobs.recover_orphaned_ecom_jobs(pool)
+        if ecom_recovered:
+            logger.info("recovered orphaned ecom jobs", count=ecom_recovered)
+
         while not stop_event.is_set():
             job = await claim_pending_job(pool)
             if job is not None:
@@ -95,6 +103,21 @@ async def run() -> None:
             if ocr_job is not None:
                 logger.info("ocr job claimed", ocr_job_id=str(ocr_job.id), query=ocr_job.query)
                 await ocr_pipeline.run_ocr_job(pool, ocr_job, settings, shutdown_event=stop_event)
+                continue
+
+            # Product Research (ecom) jobs share this daemon too (parallel job type, separate
+            # table + channel — see db/migrations/1785000000000_ecom-crawl.sql).
+            ecom_job = await ecom_jobs.claim_pending_ecom_job(pool)
+            if ecom_job is not None:
+                logger.info(
+                    "ecom job claimed",
+                    ecom_job_id=str(ecom_job.id),
+                    platform=ecom_job.platform,
+                    query=ecom_job.query,
+                )
+                await ecom_pipeline.run_ecom_job(
+                    pool, ecom_job, settings, shutdown_event=stop_event
+                )
                 continue
 
             wake_event.clear()

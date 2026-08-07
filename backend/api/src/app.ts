@@ -18,6 +18,7 @@ import { geocodeRouter } from "./routes/geocode.js";
 import { exportsRouter } from "./routes/exports.js";
 import { publicApiRouter } from "./routes/publicApi.js";
 import { ocrCrawlRouter } from "./routes/ocrCrawl.js";
+import { ecomCrawlRouter } from "./routes/ecomCrawl.js";
 import { marketingRouter } from "./routes/marketing.js";
 
 // App assembly only — no listen() here (see server.ts). Keeping the two apart lets tests
@@ -43,6 +44,7 @@ export function createApp(): Express {
   app.use(exportsRouter);
   app.use(publicApiRouter);
   app.use(ocrCrawlRouter);
+  app.use(ecomCrawlRouter);
   app.use(marketingRouter);
 
   app.use(notFoundHandler);
