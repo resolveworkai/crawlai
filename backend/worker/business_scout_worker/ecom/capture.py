@@ -158,6 +158,7 @@ class EcomCaptureEngine:
 
         async with async_playwright() as p:
             context, cdp_browser = await self._open_context(p)
+            await self._adapter.on_context_ready(context)
             # Under CDP we open (and later close) our OWN tab so we never hijack or close the
             # operator's existing tabs; under a launched context the default blank page is ours.
             page = (
@@ -318,6 +319,7 @@ class EcomCaptureEngine:
 
         async with async_playwright() as p:
             context, cdp_browser = await self._open_context(p)
+            await self._adapter.on_context_ready(context)
             try:
                 for product in capped:
                     if should_stop is not None and should_stop():

@@ -258,3 +258,44 @@ def test_combiner_source_images_and_identity_fields_pass_through() -> None:
     assert parsed.product_url == "https://www.noon.com/uae-en/p/N123"
     assert parsed.image_url == "https://images.noon.com/kb.jpg"
     assert parsed.currency == "SAR"  # falls back to default_currency when dom has none
+
+
+# --- AliExpress pure-OCR path: "N sold" demand + OCR title derivation ---------------------------
+
+
+def test_sold_count_fills_bought_past_month() -> None:
+    # AliExpress "N sold" is the demand signal — mapped onto the shared bought_past_month field.
+    parsed = parse_product.parse_product(
+        _lines("4.9", "2,000+ sold"),
+        idx=1,
+        title="Product 1",  # capture-step placeholder (pure-OCR platform, no DOM title)
+        default_currency="USD",
+    )
+    assert parsed.bought_past_month == 2000
+
+
+def test_ocr_title_derived_and_badge_prefix_stripped() -> None:
+    parsed = parse_product.parse_product(
+        _lines(
+            "Choice 1.7L Electric Rice Cooker Multi Cooker",
+            "$14.3 $51.63 -72%",
+            "4.4 | 4,000+ sold",
+            "Top selling on Ali",
+        ),
+        idx=2,
+        title="Product 2",
+        default_currency="USD",
+    )
+    assert parsed.title == "1.7L Electric Rice Cooker Multi Cooker"
+    assert parsed.bought_past_month == 4000
+
+
+def test_dom_title_not_overridden_by_ocr_derivation() -> None:
+    # A real (non-placeholder) title must never be replaced by an OCR guess.
+    parsed = parse_product.parse_product(
+        _lines("Choice Some Other Text Here Long"),
+        idx=3,
+        title="Genuine DOM Title",
+        dom=DomProductFields(title="Genuine DOM Title"),
+    )
+    assert parsed.title == "Genuine DOM Title"

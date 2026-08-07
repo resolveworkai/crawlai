@@ -1,12 +1,12 @@
 /** Authored by: Mohit Singh */
 import { z } from "zod";
 
-// Product Research (Ecom-Crawl) module. aliexpress is a valid DB enum value (see the
-// ecom_jobs.platform CHECK) but is deliberately excluded from the *creatable* set here — the
-// worker's aliexpress adapter is a stub that throws NotImplementedError, so the API must never
-// let a job queue with that platform.
+// Product Research (Ecom-Crawl) module. All three platforms are creatable. noon + aliexpress are
+// REQUIRES_CDP (Akamai-blocked to automated launch) — they run only via the host runner attached
+// to the operator's real Chrome (backend/worker/run_noon_host.py), not the container daemon; the
+// UI still queues them normally. amazon runs headless in the container.
 export const createEcomJobSchema = z.object({
-  platform: z.enum(["noon", "amazon"]),
+  platform: z.enum(["noon", "amazon", "aliexpress"]),
   query: z.string().min(1).max(200),
   sortMode: z
     .enum(["rating_desc", "price_asc", "price_desc", "relevance"])

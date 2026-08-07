@@ -57,6 +57,37 @@ their audit-trail images aren't served by the container API — but DOM extracti
 noon (title/price/rating/reviews/badges/image all from the card DOM), and the frontend falls back
 to noon's CDN `image_url` for thumbnails, so this is cosmetic only.
 
+## AliExpress — same host-runner path, but PURE-OCR extraction {#aliexpress-ocr}
+
+AliExpress is also Akamai-blocked (`REQUIRES_CDP = True`), so it runs through the SAME host runner
+as noon (`cdp_required_platforms()` now returns `{noon, aliexpress}`; the container excludes both,
+the host runner claims both). Two things differ from noon:
+
+- **Pure OCR by design** (chosen 2026-08-07): `AliExpressAdapter.extract_card` reads NOTHING but the
+  product link (and image) from the DOM — a URL OCR can't produce. Title, price, rating, and "N
+  sold" all come from Tesseract OCR of the card screenshot in Stage B, because AliExpress's card
+  classes are hashed CSS-modules that churn constantly and pixel OCR is more durable. `parse_product`
+  gained a `_parse_sold` (AliExpress "4,000+ sold" → the shared `bought_past_month` demand field) and
+  `_derive_title` (longest non-chrome OCR line, leading "Choice"/badge token stripped). The pipeline
+  already forces the OCR path when the DOM is empty, so no pipeline change was needed.
+- **English/USD forced before the first navigation**: on a UAE profile AliExpress renders in Arabic,
+  which makes OCR titles garbage. `AliExpressAdapter.on_context_ready` (a new base-adapter hook run
+  once after the context opens, before nav — wired into `capture.py`) sets the `aep_usuc_f` cookie
+  (`site=glo&c_tp=USD&region=US&b_locale=en_US`); verified the page then loads English.
+
+Sort is by orders (`total_tranpro_desc`) since AliExpress has NO rating sort — the "N sold" signal
+OCRs cleanly and drives the opportunity score. **Accepted pure-OCR limitations**: the card visually
+truncates long titles (so OCR titles are truncated — full title is only on the detail page), and OCR
+occasionally drops a decimal in a price/rating (the 0-5 rating validation nulls a bad read rather
+than storing a wrong one). Needs **Tesseract on the host** (`TESSERACT_CMD` env → `settings.tesseract_cmd`;
+the container already has it on PATH). The host runner/launcher handles noon AND aliexpress
+identically — `start-noon-host.bat` processes both.
+
+**Alibaba was evaluated and deliberately NOT built**: even via real Chrome it serves a slider CAPTCHA
+("Please drag the slider to verify") on a fresh profile, and its robots.txt explicitly disallows the
+product/search paths. Solving CAPTCHAs is out of scope (policy + this module's own "CAPTCHA →
+blocked, never solve" rule), so Alibaba is unsupported.
+
 ## Deliberately separate from Crawl (OCR) — own everything, shared utilities only
 
 This module and the Crawl-OCR (Google Maps) module look similar (DOM-first + OCR-fallback +

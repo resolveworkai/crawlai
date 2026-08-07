@@ -83,10 +83,11 @@ const STATUS_COLOR: Record<EcomJobStatus, string> = {
 };
 
 const PLATFORM_OPTIONS: { value: EcomPlatform; label: string; disabled?: boolean }[] = [
-  { value: "noon", label: "Noon" },
+  { value: "noon", label: "Noon (needs host runner)" },
   { value: "amazon", label: "Amazon" },
-  // aliexpress is a valid DB enum value but the worker's adapter is a stub — never creatable.
-  { value: "aliexpress", label: "AliExpress", disabled: true },
+  // noon + aliexpress are Akamai-blocked to automated launch — they run via the host runner
+  // (real Chrome), not the container. Still queued normally from here.
+  { value: "aliexpress", label: "AliExpress (needs host runner)" },
 ];
 
 const SORT_OPTIONS: { value: EcomSortMode; label: string }[] = [

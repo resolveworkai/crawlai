@@ -25,6 +25,11 @@ PRICE_RE = re.compile(
 RATING_RE = re.compile(r"\b([0-5](?:\.\d)?)\s*(?:out of\s*5)?\b", re.I)
 REVIEWS_RE = re.compile(r"\(?([\d,]+)\)?\s*(?:ratings?|reviews?)\b", re.I)
 BOUGHT_RE = re.compile(r"([\d,]+)\+?\s*bought in (?:the )?past month", re.I)
+# AliExpress demand signal ("4,000+ sold", "2,000+ sold") — the analogue of Amazon's
+# bought-in-past-month; feeds the same bought_past_month field so the opportunity score's demand
+# component works uniformly across platforms. OCRs cleanly (Latin digits) even when other fields
+# lose a decimal.
+SOLD_RE = re.compile(r"([\d,]+)\+?\s*sold\b", re.I)
 FREE_DELIVERY_RE = re.compile(r"free (?:delivery|shipping)", re.I)
 DELIVERY_DATE_RE = re.compile(
     r"(?:Get it|Delivery|Arrives)\b[^\n]*?"
@@ -33,6 +38,9 @@ DELIVERY_DATE_RE = re.compile(
 )
 DISCOUNT_RE = re.compile(r"(\d{1,3})\s*%\s*off", re.I)
 BADGE_RE = re.compile(r"#\s*(\d+)\s*in\s*([A-Za-z0-9 &'/-]+)", re.I)
+# The capture step's placeholder when the adapter read no DOM title (pure-OCR platforms) — see
+# ecom/capture.py's `title = dom.title or f"Product {n}"`.
+_PLACEHOLDER_TITLE_RE = re.compile(r"^Product \d+$")
 
 
 @dataclass
@@ -82,6 +90,48 @@ def _parse_bought(lines: list[OcrLine]) -> _Field:
             if digits.isdigit():
                 return _Field(value=int(digits), confidence=line.confidence, source_line=line.text)
     return _Field()
+
+
+def _parse_sold(lines: list[OcrLine]) -> _Field:
+    for line in lines:
+        m = SOLD_RE.search(line.text)
+        if m:
+            digits = m.group(1).replace(",", "")
+            if digits.isdigit():
+                return _Field(value=int(digits), confidence=line.confidence, source_line=line.text)
+    return _Field()
+
+
+# Lines that are chrome, NOT a product title (price/sold/promo/delivery). Deliberately does NOT
+# include badge words like "Choice" — those bleed into the start of the real title line on an
+# AliExpress card, so we strip them as a prefix (below) rather than rejecting the whole line.
+_TITLE_SKIP_RE = re.compile(
+    r"(\bsold\b|\bsave\b|shipping|delivery|%\s*off|top selling|new shopper|\$|"
+    r"^\s*[\d.,+\s|-]+\s*$)",
+    re.I,
+)
+# Leading badge/promo tokens OCR prepends to the title line — stripped from the front only.
+_TITLE_PREFIX_RE = re.compile(r"^\s*(choice|best\s*seller|ad|sponsored)\b[\s:|-]*", re.I)
+
+
+def _derive_title(lines: list[OcrLine]) -> str | None:
+    """Pure-OCR title fallback: pick the longest text-heavy line that isn't price/sold/promo chrome,
+    then strip a leading badge token (e.g. "Choice"). Noisy by nature (the card visually truncates
+    long titles), but it's the only title source when the adapter reads nothing from the DOM
+    (AliExpress). Returns None if nothing plausible was OCR'd."""
+    best: str | None = None
+    for line in lines:
+        text = line.text.strip()
+        if sum(c.isalpha() for c in text) < 8:  # too few letters to be a title
+            continue
+        if _TITLE_SKIP_RE.search(text):
+            continue
+        if best is None or len(text) > len(best):
+            best = text
+    if best is None:
+        return None
+    stripped = _TITLE_PREFIX_RE.sub("", best).strip()
+    return stripped or best
 
 
 def _parse_free_delivery(lines: list[OcrLine]) -> _Field:
@@ -146,16 +196,29 @@ def parse_product(
     rating = _parse_rating(lines)
     reviews = _parse_reviews(lines)
     bought = _parse_bought(lines)
+    sold = _parse_sold(lines)
     free_delivery = _parse_free_delivery(lines)
     delivery_date = _parse_delivery_date(lines)
     discount = _parse_discount(lines)
     rank, category = _parse_badge_rank(lines)
 
+    # Pure-OCR platforms (AliExpress) read no title from the DOM, so the capture step handed us a
+    # "Product N" placeholder — derive a real title from the OCR text in that case only.
+    derived_title = (
+        _derive_title(lines) if dom.title is None and _PLACEHOLDER_TITLE_RE.match(title) else None
+    )
+
     final_price = dom.price if dom.price is not None else price.value
     final_list_price = dom.list_price
     final_rating = dom.rating if dom.rating is not None else rating.value
     final_reviews = dom.review_count if dom.review_count is not None else reviews.value
-    final_bought = dom.bought_past_month if dom.bought_past_month is not None else bought.value
+    # bought_past_month is the shared demand field: DOM value wins, then Amazon "bought in past
+    # month", then AliExpress "N sold".
+    final_bought = (
+        dom.bought_past_month
+        if dom.bought_past_month is not None
+        else (bought.value if bought.value is not None else sold.value)
+    )
     final_bought_raw = dom.bought_past_month_raw
     final_free_delivery = dom.free_delivery or bool(free_delivery.value)
     final_delivery_date = dom.delivery_date or delivery_date.value
@@ -165,7 +228,7 @@ def parse_product(
 
     contributing = [
         f.confidence
-        for f in (price, rating, reviews, bought, delivery_date, discount)
+        for f in (price, rating, reviews, bought, sold, delivery_date, discount)
         if f.value is not None
     ]
     ocr_confidence = (
@@ -196,7 +259,7 @@ def parse_product(
     return ParsedProduct(
         idx=idx,
         page_num=page_num,
-        title=dom.title or title,
+        title=dom.title or derived_title or title,
         product_url=dom.product_url or product_url,
         image_url=dom.image_url or image_url,
         price=final_price,

@@ -14,7 +14,7 @@ from abc import ABC, abstractmethod
 from typing import ClassVar
 from urllib.parse import urljoin, urlsplit, urlunsplit
 
-from playwright.async_api import ElementHandle, Locator, Page
+from playwright.async_api import BrowserContext, ElementHandle, Locator, Page
 
 from business_scout_worker.ecom.models import DomDetailFields, DomProductFields, SortMode
 
@@ -51,6 +51,12 @@ class PlatformAdapter(ABC):
     # skipped by the containerized daemon (no Chrome there) and handled only by the host runner
     # (run_noon_host.py) with ECOM_CDP_URL set. See md/ECOM_CRAWL.md "noon.com requires CDP".
     REQUIRES_CDP: ClassVar[bool] = False
+
+    async def on_context_ready(self, context: BrowserContext) -> None:  # noqa: B027 - intentional optional no-op hook, not abstract
+        """Runs ONCE right after the browser context is opened, before the first navigation.
+        Default no-op. Override to set cookies the site needs BEFORE its first page load — e.g.
+        AliExpress uses this to force the English/USD locale (aep_usuc_f cookie), which page-1
+        navigation would otherwise render in the profile's geo language. Must never raise."""
 
     @abstractmethod
     def search_url(self, query: str, sort: SortMode, page: int) -> str:

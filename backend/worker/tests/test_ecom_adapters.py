@@ -11,6 +11,7 @@ from __future__ import annotations
 import pytest
 
 from business_scout_worker.ecom.adapters import get_adapter
+from business_scout_worker.ecom.adapters.aliexpress import AliExpressAdapter
 from business_scout_worker.ecom.adapters.amazon import AmazonAdapter
 from business_scout_worker.ecom.adapters.base import extract_asin
 from business_scout_worker.ecom.adapters.noon import (
@@ -156,18 +157,48 @@ def test_get_adapter_noon_and_amazon_return_correct_types() -> None:
     assert isinstance(get_adapter("amazon"), AmazonAdapter)
 
 
-def test_get_adapter_aliexpress_constructs_but_methods_raise() -> None:
-    # Registered (so the DB CHECK/typed Platform literal both already accept it) but not
-    # implemented — the adapter object itself constructs fine, only calling its methods fails.
+def test_get_adapter_aliexpress_returns_correct_type() -> None:
     adapter = get_adapter("aliexpress")
+    assert isinstance(adapter, AliExpressAdapter)
     assert adapter.platform == "aliexpress"
-    with pytest.raises(NotImplementedError):
-        adapter.search_url("yoga mat", "relevance", 1)
+    assert adapter.REQUIRES_CDP is True  # Akamai-blocked — host runner only
 
 
 def test_get_adapter_unknown_platform_raises_value_error() -> None:
     with pytest.raises(ValueError):
         get_adapter("bogus")
+
+
+# --- aliexpress.search_url / product_key --------------------------------------------------------
+
+
+def test_aliexpress_search_url_rating_maps_to_best_selling() -> None:
+    # AliExpress has no rating sort — rating_desc maps to best-selling (orders).
+    url = AliExpressAdapter().search_url("rice cooker", "rating_desc", 1)
+    assert url == (
+        "https://www.aliexpress.com/w/wholesale-rice-cooker.html?page=1&SortType=total_tranpro_desc"
+    )
+
+
+def test_aliexpress_search_url_price_asc_page_2() -> None:
+    url = AliExpressAdapter().search_url("yoga mat", "price_asc", 2)
+    assert url == ("https://www.aliexpress.com/w/wholesale-yoga-mat.html?page=2&SortType=price_asc")
+
+
+def test_aliexpress_search_url_relevance_is_default_sort() -> None:
+    url = AliExpressAdapter().search_url("dumbbells", "relevance", 1)
+    assert url.endswith("SortType=default")
+
+
+def test_aliexpress_product_key_extracts_item_id() -> None:
+    key = AliExpressAdapter().product_key(
+        "https://www.aliexpress.us/item/3256807217377289.html?spm=abc"
+    )
+    assert key == "3256807217377289"
+
+
+def test_aliexpress_product_key_none_for_non_item_href() -> None:
+    assert AliExpressAdapter().product_key("https://www.aliexpress.com/w/wholesale-x.html") is None
 
 
 # --- noon._parse_review_count / _parse_rating / _parse_amount -----------------------------------
