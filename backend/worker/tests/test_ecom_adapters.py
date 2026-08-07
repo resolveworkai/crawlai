@@ -76,9 +76,25 @@ def test_amazon_search_url_price_desc() -> None:
 # --- product_key ---------------------------------------------------------------------------------
 
 
-def test_noon_product_key_extracts_sku_after_p_segment() -> None:
-    href = "https://www.noon.com/uae-en/some-product-title/p/N70062533V/"
+def test_noon_product_key_extracts_sku_before_p_segment() -> None:
+    # Real noon URL shape (verified 2026-08-07 against live hrefs): the SKU is the segment
+    # immediately BEFORE `/p/`, followed by a `?o=` tracking param.
+    href = "https://www.noon.com/uae-en/some-product-title/N70062533V/p/?o=fec286202e0d640a"
     assert NoonAdapter().product_key(href) == "N70062533V"
+
+
+def test_noon_product_key_extracts_alphanumeric_sku() -> None:
+    href = "https://www.noon.com/uae-en/cuckoo-rice-cooker/ZC7E09604077A091EA1B4Z/p/?o=zc7e-1"
+    assert NoonAdapter().product_key(href) == "ZC7E09604077A091EA1B4Z"
+
+
+def test_noon_product_key_same_across_tracking_params() -> None:
+    # The whole point of the key: the same product linked from two pages (different `?o=`)
+    # dedups to one SKU.
+    a = "https://www.noon.com/uae-en/x/N11043863A/p/?o=aaaa"
+    b = "https://www.noon.com/uae-en/x/N11043863A/p/?o=bbbb"
+    adapter = NoonAdapter()
+    assert adapter.product_key(a) == adapter.product_key(b) == "N11043863A"
 
 
 def test_noon_product_key_none_for_malformed_href() -> None:

@@ -11,12 +11,21 @@ SEPARATE code — nothing here imports from or is imported by the ocr/ package's
 
 from __future__ import annotations
 
+import contextlib
 import json
 import re
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 
-from playwright.async_api import BrowserContext, ElementHandle, Page, ViewportSize, async_playwright
+from playwright.async_api import (
+    Browser,
+    BrowserContext,
+    ElementHandle,
+    Page,
+    Playwright,
+    ViewportSize,
+    async_playwright,
+)
 
 from business_scout_worker.ecom.adapters.base import PlatformAdapter
 from business_scout_worker.ecom.models import CapturedProduct, EcomEndReason, EcomManifest
@@ -84,6 +93,49 @@ class EcomCaptureEngine:
         self._job_dir = job_dir
         self._job_id = job_id
 
+    def _chromium_args(self) -> list[str]:
+        args = ["--disable-dev-shm-usage", "--no-sandbox"]
+        if self._adapter.FORCE_HTTP1:
+            args.append("--disable-http2")
+        return args
+
+    def _profile_dir(self) -> Path:
+        d = (
+            Path(self._settings.ecom_captures_dir).parent
+            / f".profile-ecom-{self._adapter.platform}"
+        )
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+
+    async def _open_context(self, p: Playwright) -> tuple[BrowserContext, Browser | None]:
+        """Returns (context, cdp_browser). When ecom_cdp_url is set we ATTACH over CDP to the
+        operator's already-running Chrome — the only way past noon.com's edge block (see the
+        noon adapter / md/ECOM_CRAWL.md); cdp_browser is returned so the caller disconnects
+        without killing that Chrome. Otherwise a headless persistent context is launched and
+        cdp_browser is None (caller closes the context normally)."""
+        cdp_url = self._settings.ecom_cdp_url
+        if cdp_url:
+            browser = await p.chromium.connect_over_cdp(cdp_url)
+            context = browser.contexts[0] if browser.contexts else await browser.new_context()
+            context.set_default_timeout(self._settings.ecom_nav_timeout_ms)
+            return context, browser
+        context = await p.chromium.launch_persistent_context(
+            user_data_dir=str(self._profile_dir()),
+            headless=self._settings.ecom_headless,
+            viewport=VIEWPORT,
+            device_scale_factor=self._settings.ecom_device_scale,
+            locale="en-US",
+            args=self._chromium_args(),
+        )
+        return context, None
+
+    @staticmethod
+    async def _close_context(context: BrowserContext, cdp_browser: Browser | None) -> None:
+        if cdp_browser is not None:
+            await cdp_browser.close()  # disconnect only — operator's Chrome stays running
+        else:
+            await context.close()
+
     async def run(
         self,
         *,
@@ -98,11 +150,6 @@ class EcomCaptureEngine:
     ) -> EcomManifest:
         raw_dir = self._job_dir / "raw"
         raw_dir.mkdir(parents=True, exist_ok=True)
-        profile_dir = (
-            Path(self._settings.ecom_captures_dir).parent
-            / f".profile-ecom-{self._adapter.platform}"
-        )
-        profile_dir.mkdir(parents=True, exist_ok=True)
 
         items: list[CapturedProduct] = list(resume_items) if resume_items else []
         seen: set[str] = {it.product_key or (it.product_url or it.title) for it in items}
@@ -110,15 +157,14 @@ class EcomCaptureEngine:
         stagnation = 0
 
         async with async_playwright() as p:
-            context: BrowserContext = await p.chromium.launch_persistent_context(
-                user_data_dir=str(profile_dir),
-                headless=self._settings.ecom_headless,
-                viewport=VIEWPORT,
-                device_scale_factor=self._settings.ecom_device_scale,
-                locale="en-US",
-                args=["--disable-dev-shm-usage", "--no-sandbox"],
+            context, cdp_browser = await self._open_context(p)
+            # Under CDP we open (and later close) our OWN tab so we never hijack or close the
+            # operator's existing tabs; under a launched context the default blank page is ours.
+            page = (
+                await context.new_page()
+                if cdp_browser is not None
+                else (context.pages[0] if context.pages else await context.new_page())
             )
-            page = context.pages[0] if context.pages else await context.new_page()
             page.set_default_timeout(self._settings.ecom_nav_timeout_ms)
             try:
                 page_num = 1
@@ -219,7 +265,12 @@ class EcomCaptureEngine:
                     if page_num > max_pages:
                         end_reason = "max_pages"
             finally:
-                await context.close()
+                if cdp_browser is not None:
+                    # closing our own tab is best-effort — a torn-down page must not mask the
+                    # real result/exception
+                    with contextlib.suppress(Exception):
+                        await page.close()
+                await self._close_context(context, cdp_browser)
 
         _write_manifest_checkpoint(
             self._job_dir,
@@ -265,19 +316,8 @@ class EcomCaptureEngine:
         if not capped:
             return results
 
-        profile_dir = (
-            Path(self._settings.ecom_captures_dir).parent
-            / f".profile-ecom-{self._adapter.platform}"
-        )
         async with async_playwright() as p:
-            context: BrowserContext = await p.chromium.launch_persistent_context(
-                user_data_dir=str(profile_dir),
-                headless=self._settings.ecom_headless,
-                viewport=VIEWPORT,
-                device_scale_factor=self._settings.ecom_device_scale,
-                locale="en-US",
-                args=["--disable-dev-shm-usage", "--no-sandbox"],
-            )
+            context, cdp_browser = await self._open_context(p)
             try:
                 for product in capped:
                     if should_stop is not None and should_stop():
@@ -320,5 +360,5 @@ class EcomCaptureEngine:
                         await tab.close()
                     await humanize.dwell(300, 700)
             finally:
-                await context.close()
+                await self._close_context(context, cdp_browser)
         return results

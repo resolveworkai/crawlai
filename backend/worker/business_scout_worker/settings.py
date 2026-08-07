@@ -73,6 +73,12 @@ class Settings(BaseSettings):
     ecom_device_scale: int = Field(default=2, ge=1, le=4)
     """OCR-readability lever for the ecom card/detail screenshots — same rationale as
     ocr_device_scale (never lower it)."""
+    ecom_cdp_url: str | None = None
+    """When set (e.g. 'http://localhost:9222'), the ecom capture engine ATTACHES to an already-
+    running Chrome over the DevTools protocol instead of launching its own headless Chromium.
+    Required for REQUIRES_CDP platforms (noon.com — its edge blocks every automated-launch
+    transport; only the operator's real Chrome gets through). Left None in the containerized
+    daemon (which handles only non-CDP platforms); set on the host runner (run_noon_host.py)."""
 
 
 def load_settings() -> Settings:

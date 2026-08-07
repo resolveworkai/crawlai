@@ -56,3 +56,10 @@ backend/api/dist/
 
 # Persisted export files (generated at runtime, not source)
 exports/
+
+# Runtime capture output (manifests, screenshots, results.json) — Maps-OCR + ecom modules
+backend/worker/storage/
+
+# Ad hoc host-side debug scratch (see md/ECOM_CRAWL.md — deliberately untracked)
+backend/worker/smoke_ecom.py
+backend/worker/smoke_*.png

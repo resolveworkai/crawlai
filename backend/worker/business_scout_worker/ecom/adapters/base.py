@@ -35,6 +35,22 @@ class PlatformAdapter(ABC):
     # a "customers also viewed" rail, or similar non-product chrome — extract_card / the capture
     # loop should skip cards matching these where practical.
     BLOCK_SELECTORS: ClassVar[tuple[str, ...]] = ()
+    # When True, EcomCaptureEngine launches Chromium with --disable-http2 for this platform.
+    # Added 2026-08-07: noon.com's Akamai edge resets the connection at the HTTP/2 protocol
+    # level (`HTTP/2 stream ... INTERNAL_ERROR`) against this deployment's network before any
+    # page content loads — confirmed via curl AND Playwright, both inside the container and from
+    # the host. Forcing HTTP/1.1 is a low-cost mitigation to try first; it is NOT confirmed to
+    # fully resolve Akamai's block (a bot-detection wall can still trigger over HTTP/1.1) — see
+    # md/ECOM_CRAWL.md "Known risks" for the current status and the proxy-based fallback plan.
+    FORCE_HTTP1: ClassVar[bool] = False
+    # When True, this platform CANNOT be captured by a launched headless Chromium — its edge
+    # (Akamai, for noon.com) resets the connection at the transport layer against every
+    # automated-launch transport tried (HTTP/2, HTTP/1.1, QUIC, DoH+ECH, real-Chrome channel —
+    # all confirmed failing 2026-08-07). The only working path is attaching over CDP to the
+    # operator's ALREADY-RUNNING real Chrome (which reaches the site fine). Such a platform is
+    # skipped by the containerized daemon (no Chrome there) and handled only by the host runner
+    # (run_noon_host.py) with ECOM_CDP_URL set. See md/ECOM_CRAWL.md "noon.com requires CDP".
+    REQUIRES_CDP: ClassVar[bool] = False
 
     @abstractmethod
     def search_url(self, query: str, sort: SortMode, page: int) -> str:

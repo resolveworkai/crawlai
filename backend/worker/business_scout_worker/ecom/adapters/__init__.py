@@ -33,4 +33,12 @@ def get_adapter(platform: str) -> PlatformAdapter:
     return adapter_cls()
 
 
-__all__ = ["PlatformAdapter", "get_adapter"]
+def cdp_required_platforms() -> frozenset[str]:
+    """Platforms whose adapter sets REQUIRES_CDP — they CANNOT run in the headless container
+    daemon and are handled only by the host runner (run_noon_host.py) attached to the operator's
+    real Chrome. The containerized daemon excludes these from its claim; the host runner claims
+    only these. Single source of truth so the two claim filters never drift."""
+    return frozenset(name for name, cls in _REGISTRY.items() if cls.REQUIRES_CDP)
+
+
+__all__ = ["PlatformAdapter", "cdp_required_platforms", "get_adapter"]

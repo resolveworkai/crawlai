@@ -16,6 +16,47 @@ the main Overpass crawler — Node inserts an `ecom_jobs` row + `pg_notify`, the
 + drives it, results land in `ecom_products`. Nothing in the OCR/Maps module or the main crawler is
 touched by this one.
 
+## noon.com requires CDP-attach to the operator's real Chrome (host runner) {#noon-cdp}
+
+**amazon.ae runs headless in the container like everything else. noon.com does NOT and cannot.**
+noon's Akamai edge resets EVERY automated-launch browser transport before a byte of the page loads
+— verified 2026-08-07 against HTTP/2 (`ERR_HTTP2_PROTOCOL_ERROR`), HTTP/1.1 (`--disable-http2` →
+stall), QUIC/HTTP3 (`ERR_QUIC_PROTOCOL_ERROR`), DoH+ECH, and even Playwright's real-Chrome channel.
+The operator's ordinary Chrome reaches noon fine, so the ONLY working path is **attaching over the
+DevTools protocol (CDP) to that already-running Chrome** — which the site treats as a normal
+browser. This is why noon is handled by a **host runner**, not the container:
+
+- **`NoonAdapter.REQUIRES_CDP = True`** (base flag; `cdp_required_platforms()` in
+  `ecom/adapters/__init__.py` is the single source of truth for which platforms are host-only).
+- **`settings.ecom_cdp_url`** — when set (e.g. `http://localhost:9222`), `EcomCaptureEngine`
+  ATTACHES via `connect_over_cdp` instead of launching Chromium, and disconnects (never kills) that
+  Chrome on finish. Left unset in the container.
+- **Claim/recover partition**: the container daemon claims and recovers with
+  `exclude_platforms=cdp_required_platforms()` (never touches noon); the host runner
+  (`backend/worker/run_noon_host.py`) claims and recovers with `only_platforms=` the same set. This
+  is mandatory — without it a container respawn's orphan-recovery marks a live host job `failed`
+  out from under it (a real bug hit + fixed 2026-08-07).
+- **`ux_ecom_jobs_single_running`** was re-keyed (`migration 1785100000000`) from global
+  (`ON ((TRUE))`) to per-runner-group (`ON ((platform = ANY(ARRAY['noon'])))`) so ONE host (noon)
+  job and ONE container (non-noon) job can run concurrently — they're independent browser sessions
+  on different machines. `claim_pending_ecom_job` also now catches the `UniqueViolation` as
+  back-pressure (returns None) instead of crashing the claimer.
+- **Windows event-loop catch-22**: on the host, psycopg's async pool refuses Windows' Proactor
+  loop while Playwright's driver subprocess REQUIRES it. `run_noon_host.py` therefore runs the
+  shared async pipeline on the Proactor loop and routes DB through a tiny **sync-psycopg shim**
+  (`_SyncPoolShim`, via `asyncio.to_thread`) that presents the exact async-pool surface
+  `ecom/jobs.py` uses — so the pipeline/jobs code runs UNCHANGED. The Linux container never hits
+  this (both work there) and keeps using the real async pool.
+
+**Operator flow for a noon job**: run `scripts/start-noon-chrome.bat` (starts Chrome with
+`--remote-debugging-port=9222` on a dedicated scratch profile) → queue a `platform=noon` job from
+the `/ecom-crawl` UI as normal → run `run_noon_host.py` with `DATABASE_URL` (host port 5436) +
+`ECOM_CDP_URL=http://localhost:9222`. Results land in the same `ecom_products`/frontend as any
+amazon job. Screenshots taken by the host runner live on host disk (not the container volume), so
+their audit-trail images aren't served by the container API — but DOM extraction is complete for
+noon (title/price/rating/reviews/badges/image all from the card DOM), and the frontend falls back
+to noon's CDN `image_url` for thumbnails, so this is cosmetic only.
+
 ## Deliberately separate from Crawl (OCR) — own everything, shared utilities only
 
 This module and the Crawl-OCR (Google Maps) module look similar (DOM-first + OCR-fallback +
@@ -211,21 +252,25 @@ Shared with the OCR module (not reconfigured per-module): `TESSERACT_CMD`, `OMP_
   — the page's own "Sort By" control shows "Best Rated" selected when this URL is loaded. No
   longer an open risk; `price_asc`/`price_desc`/`relevance` remain unverified by the same standard
   (implemented from the same observed URL-shape pattern, not yet confirmed against a live page).
-- **noon's card-field selectors — PARTIALLY FIXED (2026-08-07), rating/review/badges still stale**:
-  a live captured card DOM (real inspect-element dump against a `camera` search) showed the
-  original `title`/`price` `data-qa` guesses (`product-name`/`product-price`) were wrong — noon
-  actually uses `plp-product-box-name`/`plp-product-box-price`. Fixed in `noon.py`, confirmed
-  against the real sample (`"199"` → price 199.0, `"4.6"` → rating 4.6). **Still unconfirmed / most
-  likely still broken**: `rating`/`review_count` have **no `data-qa` hook at all** in the observed
-  markup — matched instead via the CSS-module class-name *prefix* (`_textCtr_`/`_countCtr_`, the
-  stable part of noon's per-build-hashed class names), which is a best-effort, not a verified-
-  stable signal; and `badges` (rank-in-category, stock-scarcity, delivery-speed nudges) come from
-  a `_nudgeText_` marquee strip, not the `data-qa="pick-badge"`/`class*="badge"` guesses the code
-  shipped with. If `extract_card()` still returns mostly-null rating/review_count/badges in
-  practice, re-inspect a live card DOM before trusting the class-prefix match — CSS-module tooling
-  occasionally reshuffles the source class name itself (not just its hash suffix) on a larger
-  refactor. The OCR fallback (screenshot audit trail → Tesseract → `parse_product.py`) is what
-  currently backstops this gap in production, not a guarantee it always will.
+- **noon's card selectors — FIXED + VERIFIED END-TO-END (2026-08-07)**: the original card/field
+  selectors were all wrong (guessed, never checked). Corrected against live noon DOM (via CDP) and
+  proven by a real `rice cooker` capture — 10+ products with correct title/price(AED)/rating
+  (4.5–4.8)/badges ("#1 in Rice Cookers", "Free Delivery", "Selling out fast"):
+  - **Card container**: `div[data-qa="plp-product-box"]` (was `product-card`/`productContainer`,
+    both matched 0). Naturally excludes the top sponsored banner cards (they lack it).
+  - **title/price**: `plp-product-box-name` / `plp-product-box-price strong` (were
+    `product-name`/`product-price`).
+  - **rating/review**: no `data-qa` hook exists — matched via CSS-module class *prefix*
+    `_textCtr_`/`_countCtr_` (the stable part of noon's per-build-hashed names). review counts
+    render as `"23.7K"` (K/M-suffix parsing added).
+  - **badges**: the `_nudgeText_` marquee strip (rank-in-category / stock / delivery nudges), not
+    the old `pick-badge`/`badge` guesses.
+  - **product_key (SKU)**: noon URLs are `.../<SKU>/p/?o=<tracking>` — SKU is BEFORE `/p/`, not
+    after (the shipped regex matched nothing, so cross-page dedup silently fell back to the
+    tracking-param'd href). Fixed + regression-tested.
+  If a future noon redesign reshuffles the source class names (not just the hash suffix), re-inspect
+  a live card via the host runner + a fresh `--max` job; the OCR fallback backstops any gap
+  meanwhile.
 - **Selector fragility (amazon, and noon beyond what's confirmed above)**: card/field selectors
   carry 2-3 fallbacks each (role/aria/data-qa-over-class-name, mirroring `ocr/selectors.py`'s
   philosophy) but e-commerce SPA class names drift. If `extract_card()` starts returning

@@ -11,6 +11,7 @@ from business_scout_worker import pipeline
 from business_scout_worker.db import create_pool, ping_database
 from business_scout_worker.ecom import jobs as ecom_jobs
 from business_scout_worker.ecom import pipeline as ecom_pipeline
+from business_scout_worker.ecom.adapters import cdp_required_platforms
 from business_scout_worker.enrich import tier2
 from business_scout_worker.jobs import claim_pending_job
 from business_scout_worker.logging_config import configure_logging, get_logger
@@ -82,8 +83,13 @@ async def run() -> None:
         if recovered:
             logger.info("recovered orphaned ocr jobs", count=recovered)
 
-        # Same self-heal for the Product Research module — see ecom/jobs.py.
-        ecom_recovered = await ecom_jobs.recover_orphaned_ecom_jobs(pool)
+        # Same self-heal for the Product Research module — see ecom/jobs.py. EXCLUDES CDP
+        # platforms (noon): those run on the host runner, possibly RIGHT NOW on another machine,
+        # so a container respawn must never mark such a live job 'failed'. The host runner
+        # recovers its own kind at its startup.
+        ecom_recovered = await ecom_jobs.recover_orphaned_ecom_jobs(
+            pool, exclude_platforms=cdp_required_platforms()
+        )
         if ecom_recovered:
             logger.info("recovered orphaned ecom jobs", count=ecom_recovered)
 
@@ -106,8 +112,12 @@ async def run() -> None:
                 continue
 
             # Product Research (ecom) jobs share this daemon too (parallel job type, separate
-            # table + channel — see db/migrations/1785000000000_ecom-crawl.sql).
-            ecom_job = await ecom_jobs.claim_pending_ecom_job(pool)
+            # table + channel — see db/migrations/1785000000000_ecom-crawl.sql). Excludes
+            # REQUIRES_CDP platforms (noon) — they can't run headless in a container (no real
+            # Chrome to attach to) and are handled by the host runner (run_noon_host.py) instead.
+            ecom_job = await ecom_jobs.claim_pending_ecom_job(
+                pool, exclude_platforms=cdp_required_platforms()
+            )
             if ecom_job is not None:
                 logger.info(
                     "ecom job claimed",

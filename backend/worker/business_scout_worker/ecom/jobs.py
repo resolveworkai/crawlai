@@ -9,9 +9,11 @@ blocked). The Node API only reads these rows.
 
 from __future__ import annotations
 
+from collections.abc import Collection
 from typing import Any, cast
 from uuid import UUID
 
+from psycopg.errors import UniqueViolation
 from psycopg.types.json import Jsonb
 from psycopg_pool import AsyncConnectionPool
 
@@ -19,22 +21,51 @@ from business_scout_worker.ecom.models import EcomEndReason, EcomJob, EcomJobSta
 from business_scout_worker.models import LogLevel
 
 
-async def claim_pending_ecom_job(pool: AsyncConnectionPool) -> EcomJob | None:
-    async with pool.connection() as conn:
-        cur = await conn.execute(
-            """
-            UPDATE ecom_jobs SET status = 'capturing', started_at = now()
-            WHERE id = (
-                SELECT id FROM ecom_jobs
-                WHERE status = 'queued'
-                ORDER BY created_at ASC
-                FOR UPDATE SKIP LOCKED
-                LIMIT 1
+async def claim_pending_ecom_job(
+    pool: AsyncConnectionPool,
+    *,
+    only_platforms: Collection[str] | None = None,
+    exclude_platforms: Collection[str] | None = None,
+) -> EcomJob | None:
+    """Atomically claims the oldest queued job. `only_platforms`/`exclude_platforms` partition
+    the queue between the containerized daemon (excludes REQUIRES_CDP platforms it can't run) and
+    the host runner (claims only those) — see ecom/adapters.cdp_required_platforms(). Passing a
+    platform to both filters, or an empty `only_platforms`, would match nothing; callers pass at
+    most one filter."""
+    conditions = ["status = 'queued'"]
+    params: list[Any] = []
+    if only_platforms is not None:
+        conditions.append("platform = ANY(%s)")
+        params.append(list(only_platforms))
+    if exclude_platforms:
+        conditions.append("NOT (platform = ANY(%s))")
+        params.append(list(exclude_platforms))
+    where = " AND ".join(conditions)
+    try:
+        async with pool.connection() as conn:
+            cur = await conn.execute(
+                f"""
+                UPDATE ecom_jobs SET status = 'capturing', started_at = now()
+                WHERE id = (
+                    SELECT id FROM ecom_jobs
+                    WHERE {where}
+                    ORDER BY created_at ASC
+                    FOR UPDATE SKIP LOCKED
+                    LIMIT 1
+                )
+                RETURNING *
+                """,  # noqa: S608 - `where` is static fragments; values are parameterized
+                params,
             )
-            RETURNING *
-            """
-        )
-        row = await cur.fetchone()
+            row = await cur.fetchone()
+    except UniqueViolation:
+        # ux_ecom_jobs_single_running caps the whole system at one job in a running state. With
+        # both the container daemon (non-CDP platforms) and the host runner (CDP platforms, e.g.
+        # noon) claiming from the same queue, whichever tries to start a second concurrent job
+        # trips this — that is expected back-pressure, NOT an error: the job stays queued and the
+        # loser retries later. (This used to crash the container daemon mid-claim, whose respawn
+        # then clobbered the host runner's in-flight job via orphan recovery.)
+        return None
     return EcomJob.model_validate(row) if row is not None else None
 
 
@@ -221,21 +252,42 @@ async def get_ecom_job(pool: AsyncConnectionPool, job_id: UUID) -> EcomJob | Non
     return EcomJob.model_validate(row) if row is not None else None
 
 
-async def recover_orphaned_ecom_jobs(pool: AsyncConnectionPool) -> int:
-    """Startup self-heal — mirrors ocr/jobs.py's recover_orphaned_ocr_jobs. A container restart
-    (or crash) mid-run hard-kills the browser/OCR and leaves a job stuck in a non-terminal running
-    state (capturing/ocr/parsing/detail) that the claim query — which only takes 'queued' — will
-    never pick up again. On daemon start we mark any such orphan 'failed' with a clear message so
-    it shows a clean terminal state the user can relaunch from. Returns the number recovered."""
+async def recover_orphaned_ecom_jobs(
+    pool: AsyncConnectionPool,
+    *,
+    only_platforms: Collection[str] | None = None,
+    exclude_platforms: Collection[str] | None = None,
+) -> int:
+    """Startup self-heal — mirrors ocr/jobs.py's recover_orphaned_ocr_jobs. A restart (or crash)
+    mid-run hard-kills the browser/OCR and leaves a job stuck in a non-terminal running state
+    (capturing/ocr/parsing/detail) that the claim query — which only takes 'queued' — will never
+    pick up again. On start we mark any such orphan 'failed' with a clear message so it shows a
+    clean terminal state the user can relaunch from. Returns the number recovered.
+
+    MUST be partitioned the same way as claim (see cdp_required_platforms()): the container daemon
+    passes exclude_platforms so it NEVER recovers a CDP-platform (noon) job the host runner is
+    actively processing on another machine; the host runner passes only_platforms so it recovers
+    only its own kind. Without this, a container respawn's recovery marks the host's live job
+    'failed' out from under it (a real bug hit 2026-08-07)."""
+    conditions = ["status IN ('capturing', 'ocr', 'parsing', 'detail')"]
+    params: list[Any] = []
+    if only_platforms is not None:
+        conditions.append("platform = ANY(%s)")
+        params.append(list(only_platforms))
+    if exclude_platforms:
+        conditions.append("NOT (platform = ANY(%s))")
+        params.append(list(exclude_platforms))
+    where = " AND ".join(conditions)
     async with pool.connection() as conn:
         cur = await conn.execute(
-            """
+            f"""
             UPDATE ecom_jobs
             SET status = 'failed', end_reason = 'error', finished_at = now(),
                 error_message = 'Interrupted by a server restart — relaunch the job.'
-            WHERE status IN ('capturing', 'ocr', 'parsing', 'detail')
+            WHERE {where}
             RETURNING id
-            """
+            """,  # noqa: S608 - `where` is static fragments; values are parameterized
+            params,
         )
         rows = await cur.fetchall()
     return len(rows)

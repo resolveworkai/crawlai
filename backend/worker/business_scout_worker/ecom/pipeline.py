@@ -32,9 +32,13 @@ from business_scout_worker.settings import Settings
 
 logger = get_logger(__name__)
 
-# A product "has enough DOM fields" when the card exposed title+price+rating+review_count all —
-# anything short of that runs through the OCR fallback in Stage B.
-_REQUIRED_DOM_FIELDS = ("title", "price", "rating", "review_count")
+# A product "has enough DOM fields" when the card exposed the CORE commercial fields —
+# title+price+rating. review_count/bought/etc. are deliberately NOT required: many cards
+# legitimately have no review count (a genuinely new/unreviewed product), and OCR of the card
+# screenshot can't invent a number that isn't visually there — so gating OCR on review_count just
+# forced a pointless (and, on the host runner, tesseract-less) OCR pass that dropped otherwise-good
+# products. OCR remains the fallback only when a CORE field failed to parse from the DOM.
+_REQUIRED_DOM_FIELDS = ("title", "price", "rating")
 
 
 def _dom_is_complete(product: CapturedProduct) -> bool:
@@ -142,34 +146,33 @@ async def run_ecom_job(
                     return
                 await ecom_jobs.set_ecom_counts(pool, job.id, current_product=item.title)
                 try:
-                    if _dom_is_complete(item) or not item.images:
-                        parsed = parse_product.parse_product(
-                            [],
-                            idx=item.idx,
-                            title=item.title,
-                            product_url=item.product_url,
-                            image_url=item.image_url,
-                            page_num=item.page_num,
-                            dom=item.dom,
-                            default_currency=adapter.default_currency,
-                        )
-                        parsed.source_images = item.images
-                    else:
-                        ocr_result = await asyncio.to_thread(
-                            merge_segments, item.images, job_dir, "eng", settings.tesseract_cmd
-                        )
-                        parsed = parse_product.parse_product(
-                            ocr_result.lines,
-                            idx=item.idx,
-                            title=item.title,
-                            product_url=item.product_url,
-                            image_url=item.image_url,
-                            page_num=item.page_num,
-                            ocr=ocr_result,
-                            dom=item.dom,
-                            default_currency=adapter.default_currency,
-                        )
-                        parsed.source_images = item.images
+                    ocr_result = None
+                    if not (_dom_is_complete(item) or not item.images):
+                        # OCR fallback — but a failure here (e.g. tesseract absent on the host
+                        # runner, or an unreadable screenshot) must NOT lose the product: fall
+                        # back to a DOM-only parse so whatever the card DOM gave is still recorded.
+                        try:
+                            ocr_result = await asyncio.to_thread(
+                                merge_segments, item.images, job_dir, "eng", settings.tesseract_cmd
+                            )
+                        except Exception as ocr_exc:  # noqa: BLE001
+                            log.warning(
+                                "OCR fallback failed, using DOM-only",
+                                title=item.title,
+                                error=str(ocr_exc),
+                            )
+                    parsed = parse_product.parse_product(
+                        ocr_result.lines if ocr_result is not None else [],
+                        idx=item.idx,
+                        title=item.title,
+                        product_url=item.product_url,
+                        image_url=item.image_url,
+                        page_num=item.page_num,
+                        ocr=ocr_result,
+                        dom=item.dom,
+                        default_currency=adapter.default_currency,
+                    )
+                    parsed.source_images = item.images
                     parsed_by_idx[item.idx] = parsed
                 except Exception as exc:  # noqa: BLE001 - one bad item must not abort the job
                     log.warning("parse failed for item", title=item.title, error=str(exc))

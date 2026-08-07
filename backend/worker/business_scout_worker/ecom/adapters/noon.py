@@ -21,14 +21,24 @@ logger = get_logger(__name__)
 
 BASE_URL = "https://www.noon.com"
 
-# Tried in order — noon's product-tile anchor class is unstable; the href-shape fallback
-# (`/p/` product path) is the stable signal.
+# Tried in order. Verified 2026-08-07 against live noon.com (via CDP) DOM: each product is a
+# `div[data-qa="plp-product-box"]` wrapping an `a._productBoxLink_*` anchor that contains the
+# name/price/image. The old `product-card`/`productContainer` guesses matched NOTHING (0 cards).
+# `plp-product-box` also naturally excludes the top sponsored banner cards (they lack it). The
+# `a[href*="/p/"]` href-shape fallback is the last resort (also matches a few non-product ad
+# anchors, so it's not first).
 _CARD_SELECTORS: tuple[str, ...] = (
-    'div[data-qa="product-card"]',
-    'div[class*="productContainer"]',
+    'div[data-qa="plp-product-box"]',
+    'a[class*="_productBoxLink_"]',
     'a[href*="/p/"]',
 )
-_SKU_RE = re.compile(r"/p/([A-Za-z0-9_-]+)/?")
+# noon product URLs are `.../<slug>/<SKU>/p/?o=<tracking>` — the SKU is the path segment
+# immediately BEFORE `/p/`, NOT after it. Verified 2026-08-07 against live hrefs (e.g.
+# `.../white/N11043863A/p/?o=fec2...`, `.../ZC7E09604077A091EA1B4Z/p/?o=...`). The previous
+# `/p/([...])` pattern matched nothing (there's only `?o=` after `/p/`), so product_key returned
+# None and dedup silently fell back to the full tracking-param'd href — same product on two pages
+# could survive as two rows. This is the stable cross-page dedup key.
+_SKU_RE = re.compile(r"/([A-Za-z0-9]+)/p(?:/|\?|$)")
 _BLOCKED_TEXT = (
     "unusual traffic",
     "verify you are a human",
@@ -43,6 +53,12 @@ class NoonAdapter(PlatformAdapter):
     uses_pagination: ClassVar[bool] = True
     CARD_SELECTOR: ClassVar[str] = _CARD_SELECTORS[0]
     BLOCK_SELECTORS: ClassVar[tuple[str, ...]] = _CARD_SELECTORS
+    # noon.com resets EVERY automated-launch transport (HTTP/2, HTTP/1.1, QUIC, DoH+ECH,
+    # real-Chrome channel — all confirmed failing 2026-08-07). Attaching over CDP to the
+    # operator's already-running real Chrome is the only working path. FORCE_HTTP1 is therefore
+    # moot under CDP (no launch args), kept only to document the failed HTTP/2 finding.
+    FORCE_HTTP1: ClassVar[bool] = True
+    REQUIRES_CDP: ClassVar[bool] = True
 
     def search_url(self, query: str, sort: SortMode, page: int) -> str:
         term = quote(query)
@@ -122,8 +138,13 @@ class NoonAdapter(PlatformAdapter):
         review_count_text = await text_of('[class*="_countCtr_"]')
         image_el = await card.query_selector("img")
         image_url = (await image_el.get_attribute("src")) if image_el is not None else None
-        anchor = await card.query_selector('a[href*="/p/"]')
-        href = (await anchor.get_attribute("href")) if anchor is not None else None
+        # The card is normally the plp-product-box div (anchor is a descendant), but when a
+        # fallback selector matched, the card may itself BE the /p/ anchor — check its own href
+        # first, then look for a descendant anchor.
+        href = await card.get_attribute("href")
+        if not href:
+            anchor = await card.query_selector('a[href*="/p/"]')
+            href = (await anchor.get_attribute("href")) if anchor is not None else None
         product_url = self.normalize_product_url(href, BASE_URL) if href else None
 
         badges: list[str] = []
