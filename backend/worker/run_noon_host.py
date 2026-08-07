@@ -37,6 +37,7 @@ Results appear in the same frontend, indistinguishable from a container-run amaz
 from __future__ import annotations
 
 import asyncio
+import os
 from types import TracebackType
 from typing import Any
 
@@ -172,10 +173,33 @@ async def _run() -> int:
     return claimed
 
 
+async def _watch(poll_seconds: float) -> None:
+    """Long-running mode: drain the CDP-platform queue, then poll every `poll_seconds` for new
+    jobs, forever. Started automatically alongside the stack (scripts/start-noon-host.bat) so noon
+    jobs process without a manual run. Resilient — a transient DB/Chrome error in one cycle is
+    logged and the loop continues (so a briefly-closed debug Chrome doesn't kill the watcher)."""
+    logger.info("noon host WATCH mode starting", poll_seconds=poll_seconds)
+    while True:
+        try:
+            await _run()
+        except SystemExit:
+            raise  # config error (e.g. ECOM_CDP_URL unset) — genuinely fatal, don't loop on it
+        except Exception as exc:  # noqa: BLE001 - one bad cycle must not kill the watcher
+            logger.warning("watch cycle failed, will retry", error=str(exc))
+        await asyncio.sleep(poll_seconds)
+
+
 def main() -> None:
     # Default (Proactor) loop is REQUIRED here for Playwright's subprocess driver; the DB goes
     # through the sync shim above precisely so we DON'T need psycopg's Selector-only async loop.
-    asyncio.run(_run())
+    # ECOM_HOST_WATCH=1 turns this from a one-shot drain into a poll-forever daemon (the mode the
+    # host launcher uses so noon jobs run automatically); default stays one-shot for manual runs.
+    watch = os.getenv("ECOM_HOST_WATCH", "").strip().lower() in ("1", "true", "yes", "on")
+    if watch:
+        poll_seconds = float(os.getenv("ECOM_HOST_POLL_SECONDS", "15"))
+        asyncio.run(_watch(poll_seconds))
+    else:
+        asyncio.run(_run())
 
 
 if __name__ == "__main__":
