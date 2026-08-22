@@ -11,6 +11,7 @@ import {
   Download,
   Camera,
   ShoppingCart,
+  Home,
   Megaphone,
   Send,
   LogOut,
@@ -36,6 +37,7 @@ const mainItems = [
   { title: "Discover", url: "/discover", icon: MapPin },
   { title: "Crawl (OCR)", url: "/ocr-crawl", icon: Camera },
   { title: "Product Research", url: "/ecom-crawl", icon: ShoppingCart },
+  { title: "Property Research", url: "/property-crawl", icon: Home },
   { title: "Businesses", url: "/businesses", icon: Building2 },
   { title: "Crawl Jobs", url: "/jobs", icon: ListChecks },
 ];
@@ -51,7 +53,13 @@ const dataItems = [
   { title: "Settings", url: "/settings", icon: Settings },
 ];
 
-export function AppSidebar() {
+export function AppSidebar({
+  onMouseEnter,
+  onMouseLeave,
+}: {
+  onMouseEnter?: () => void;
+  onMouseLeave?: () => void;
+}) {
   const { state } = useSidebar();
   const collapsed = state === "collapsed";
   const currentPath = useRouterState({ select: (r) => r.location.pathname });
@@ -63,7 +71,12 @@ export function AppSidebar() {
   const role = user?.roles[0];
 
   return (
-    <Sidebar collapsible="icon" className="border-r border-sidebar-border">
+    <Sidebar
+      collapsible="offcanvas"
+      className="border-r border-sidebar-border"
+      onMouseEnter={onMouseEnter}
+      onMouseLeave={onMouseLeave}
+    >
       <SidebarHeader className="border-b border-sidebar-border">
         <div className="flex items-center gap-2.5 px-2 py-2.5">
           <div className="relative flex h-9 w-9 items-center justify-center rounded-lg bg-primary/15 ring-1 ring-primary/30">

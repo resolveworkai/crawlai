@@ -10,6 +10,7 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as SettingsRouteImport } from './routes/settings'
+import { Route as PropertyCrawlRouteImport } from './routes/property-crawl'
 import { Route as OcrCrawlRouteImport } from './routes/ocr-crawl'
 import { Route as MarketingRouteImport } from './routes/marketing'
 import { Route as LoginRouteImport } from './routes/login'
@@ -25,6 +26,11 @@ import { Route as MarketingCampaignsRouteImport } from './routes/marketing.campa
 const SettingsRoute = SettingsRouteImport.update({
   id: '/settings',
   path: '/settings',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const PropertyCrawlRoute = PropertyCrawlRouteImport.update({
+  id: '/property-crawl',
+  path: '/property-crawl',
   getParentRoute: () => rootRouteImport,
 } as any)
 const OcrCrawlRoute = OcrCrawlRouteImport.update({
@@ -94,6 +100,7 @@ export interface FileRoutesByFullPath {
   '/login': typeof LoginRoute
   '/marketing': typeof MarketingRouteWithChildren
   '/ocr-crawl': typeof OcrCrawlRoute
+  '/property-crawl': typeof PropertyCrawlRoute
   '/settings': typeof SettingsRoute
   '/marketing/campaigns': typeof MarketingCampaignsRoute
 }
@@ -108,6 +115,7 @@ export interface FileRoutesByTo {
   '/login': typeof LoginRoute
   '/marketing': typeof MarketingRouteWithChildren
   '/ocr-crawl': typeof OcrCrawlRoute
+  '/property-crawl': typeof PropertyCrawlRoute
   '/settings': typeof SettingsRoute
   '/marketing/campaigns': typeof MarketingCampaignsRoute
 }
@@ -123,6 +131,7 @@ export interface FileRoutesById {
   '/login': typeof LoginRoute
   '/marketing': typeof MarketingRouteWithChildren
   '/ocr-crawl': typeof OcrCrawlRoute
+  '/property-crawl': typeof PropertyCrawlRoute
   '/settings': typeof SettingsRoute
   '/marketing/campaigns': typeof MarketingCampaignsRoute
 }
@@ -139,6 +148,7 @@ export interface FileRouteTypes {
     | '/login'
     | '/marketing'
     | '/ocr-crawl'
+    | '/property-crawl'
     | '/settings'
     | '/marketing/campaigns'
   fileRoutesByTo: FileRoutesByTo
@@ -153,6 +163,7 @@ export interface FileRouteTypes {
     | '/login'
     | '/marketing'
     | '/ocr-crawl'
+    | '/property-crawl'
     | '/settings'
     | '/marketing/campaigns'
   id:
@@ -167,6 +178,7 @@ export interface FileRouteTypes {
     | '/login'
     | '/marketing'
     | '/ocr-crawl'
+    | '/property-crawl'
     | '/settings'
     | '/marketing/campaigns'
   fileRoutesById: FileRoutesById
@@ -182,6 +194,7 @@ export interface RootRouteChildren {
   LoginRoute: typeof LoginRoute
   MarketingRoute: typeof MarketingRouteWithChildren
   OcrCrawlRoute: typeof OcrCrawlRoute
+  PropertyCrawlRoute: typeof PropertyCrawlRoute
   SettingsRoute: typeof SettingsRoute
 }
 
@@ -192,6 +205,13 @@ declare module '@tanstack/react-router' {
       path: '/settings'
       fullPath: '/settings'
       preLoaderRoute: typeof SettingsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/property-crawl': {
+      id: '/property-crawl'
+      path: '/property-crawl'
+      fullPath: '/property-crawl'
+      preLoaderRoute: typeof PropertyCrawlRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/ocr-crawl': {
@@ -297,6 +317,7 @@ const rootRouteChildren: RootRouteChildren = {
   LoginRoute: LoginRoute,
   MarketingRoute: MarketingRouteWithChildren,
   OcrCrawlRoute: OcrCrawlRoute,
+  PropertyCrawlRoute: PropertyCrawlRoute,
   SettingsRoute: SettingsRoute,
 }
 export const routeTree = rootRouteImport

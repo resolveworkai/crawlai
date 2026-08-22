@@ -214,13 +214,7 @@ export interface ExportRecord {
 // Crawl-OCR module (db/migrations/*ocr-crawl.sql). Parallel job type to CrawlJob, processed by
 // the same Python worker daemon via a separate pg_notify channel.
 export type OcrJobStatus =
-  | "queued"
-  | "capturing"
-  | "ocr"
-  | "parsing"
-  | "ready"
-  | "failed"
-  | "blocked";
+  "queued" | "capturing" | "ocr" | "parsing" | "ready" | "failed" | "blocked";
 
 export type OcrEndReason = "end_of_list" | "max_results" | "stagnation" | "blocked" | "error";
 
@@ -285,22 +279,10 @@ export type EcomPlatform = "noon" | "amazon" | "aliexpress";
 export type EcomSortMode = "rating_desc" | "price_asc" | "price_desc" | "relevance";
 
 export type EcomJobStatus =
-  | "queued"
-  | "capturing"
-  | "ocr"
-  | "parsing"
-  | "detail"
-  | "ready"
-  | "failed"
-  | "blocked";
+  "queued" | "capturing" | "ocr" | "parsing" | "detail" | "ready" | "failed" | "blocked";
 
 export type EcomEndReason =
-  | "end_of_results"
-  | "max_pages"
-  | "max_products"
-  | "stagnation"
-  | "blocked"
-  | "error";
+  "end_of_results" | "max_pages" | "max_products" | "stagnation" | "blocked" | "error";
 
 export interface EcomScoreWeights {
   reviews?: number | undefined;
@@ -368,6 +350,101 @@ export interface EcomProduct {
   about_bullets: string[];
   breadcrumb_category: string | null;
   seller_name: string | null;
+  detail_scraped: boolean;
+  created_at: Date;
+}
+
+// --- Property Research module (db/migrations/1785300000000_property-crawl.sql) — a THIRD,
+// deliberately separate job type: own tables, own worker package (property/), own API routes,
+// own frontend route. Every supported platform (dubizzle, propertyfinder) requires CDP, so there
+// is no container-daemon claim branch or pg_notify channel — only the host runner
+// (run_property_host.py) polls for queued jobs. ---
+
+export type PropertyPlatform = "dubizzle" | "propertyfinder";
+
+export type PropertyType = "apartment" | "villa" | "townhouse" | "penthouse" | "studio";
+
+export type PropertyPurpose = "buy" | "rent";
+
+export type PropertyJobStatus =
+  "queued" | "capturing" | "parsing" | "detail" | "scoring" | "ready" | "failed" | "blocked";
+
+export type PropertyEndReason =
+  "end_of_results" | "max_pages" | "max_listings" | "stagnation" | "blocked" | "error";
+
+export interface PropertyScoreWeights {
+  value?: number | undefined;
+  keywords?: number | undefined;
+  freshness?: number | undefined;
+  verified?: number | undefined;
+}
+
+export interface PropertyJob {
+  id: string;
+  created_by: string | null;
+  platform: PropertyPlatform;
+  location: string;
+  bedrooms: number | null;
+  bathrooms: number | null;
+  property_type: PropertyType;
+  purpose: PropertyPurpose;
+  max_pages: number;
+  max_listings: number;
+  detail_scrape_top_n: number;
+  whatsapp_message_template: string | null;
+  score_weights: PropertyScoreWeights | null;
+  status: PropertyJobStatus;
+  end_reason: PropertyEndReason | null;
+  total_count: number;
+  captured_count: number;
+  detail_done_count: number;
+  current_listing: string | null;
+  error_message: string | null;
+  storage_dir: string | null;
+  retry_count: number;
+  created_at: Date;
+  started_at: Date | null;
+  finished_at: Date | null;
+}
+
+export type PropertyExtractionSource = "dom" | "dom+ocr" | "ocr";
+
+export interface PropertyListing {
+  id: string;
+  job_id: string;
+  idx: number;
+  page_num: number;
+  title: string;
+  listing_url: string | null;
+  // The SITE's own photo URLs — links only, never downloaded/proxied.
+  image_urls: string[];
+  // NUMERIC(14,2)/NUMERIC(10,2) columns — pg returns these as strings (no custom type parser
+  // registered), same convention as EcomProduct.price above. Parse with Number(...) at render
+  // time.
+  price: string | null;
+  currency: string | null;
+  area_sqft: string | null;
+  price_per_sqft: string | null;
+  bedrooms: number | null;
+  bathrooms: number | null;
+  property_type: string | null;
+  location_text: string | null;
+  community: string | null;
+  listed_days_ago: number | null;
+  verified: boolean;
+  badges: string[];
+  distress_keywords: string[];
+  agent_name: string | null;
+  // Only populated for the job's detail_scrape_top_n highest-scoring listings.
+  phone_number: string | null;
+  whatsapp_link: string | null;
+  description: string | null;
+  distress_score: number | null;
+  extraction_source: PropertyExtractionSource;
+  ocr_confidence: number | null;
+  needs_review: boolean;
+  raw_text: string | null;
+  source_images: string[];
   detail_scraped: boolean;
   created_at: Date;
 }

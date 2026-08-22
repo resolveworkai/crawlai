@@ -1,0 +1,190 @@
+"""Authored by: Mohit Singh
+
+dubizzle.com (Dubai) adapter. Card selectors and the detail-page phone-reveal flow were verified
+live 2026-08-22 via the operator's real Chrome (CDP) against a real "1 bedroom, JVC" search:
+- Card container: `div[class*="property-lpv-card"]` — one full listing (price/beds/baths/sqft/
+  title/location/verified badge) per card, confirmed via ancestor inspection of a real listing
+  anchor.
+- Listing detail URL shape: `/property-for-sale/residential/<type>/<YYYY>/<M>/<D>/<slug>-<id>/`
+  (date-in-path + slug + a >=6-digit numeric ad ID suffix) — NOT the `/ad/...` shape an earlier,
+  unverified guess assumed.
+- Phone reveal: clicking the "Call" button on the detail page reveals a real UAE mobile number in
+  the page body with NO login required (confirmed: `+971522043855` appeared after one click, no
+  redirect, no auth wall) — this is what makes the WhatsApp-link feature possible at all.
+- REQUIRES_CDP = True (inherited from base) — dubizzle blocks plain headless Chromium (confirmed:
+  an identical URL returns HTTP 200 with an EMPTY body under `p.chromium.launch(headless=True)`,
+  while loading fully through CDP-attached real Chrome).
+
+Bathroom filtering is NOT confirmed to have a working server-side URL param on dubizzle (only
+`bedrooms=`/`keywords=` were verified) — capture.py applies a client-side bathroom-count floor as a
+safety net regardless of whether the URL param actually narrows results server-side, so an
+unverified/no-op filter param degrades gracefully rather than silently ignoring the user's filter.
+"""
+
+from __future__ import annotations
+
+import re
+from typing import ClassVar
+from urllib.parse import quote
+
+from playwright.async_api import ElementHandle, Page
+
+from business_scout_worker.logging_config import get_logger
+from business_scout_worker.property import parse_property as pp
+from business_scout_worker.property.adapters.base import PlatformAdapter, SearchFilters
+from business_scout_worker.property.models import DomDetailFields, DomListingFields
+
+logger = get_logger(__name__)
+
+BASE_URL = "https://dubai.dubizzle.com"
+
+# dubizzle's own URL segment per property_type — "villahouse" (not "villa") verified from the
+# off-plan filter links present on every search page; the rest are the same segment as our own
+# property_type value.
+_TYPE_SEGMENT = {
+    "apartment": "apartment",
+    "villa": "villahouse",
+    "townhouse": "townhouse",
+    "penthouse": "penthouse",
+    "studio": "apartment",  # dubizzle has no separate studio URL segment — bedrooms=0 does this
+}
+_PURPOSE_SEGMENT = {"buy": "property-for-sale", "rent": "property-for-rent"}
+
+_CARD_SELECTORS: tuple[str, ...] = (
+    'div[class*="property-lpv-card"]',
+    'a[href*="/property-for-sale/"]',
+)
+# Real ad detail URLs carry a >=6-digit numeric ID as the last `-<digits>` segment before the
+# trailing slash — e.g. `...-fully-furnished-vaca-2-547320/`.
+_LISTING_ID_RE = re.compile(r"-(\d{6,})/?(?:\?.*)?$")
+_BLOCKED_TEXT = ("captcha", "verify you are a human", "access denied", "unusual traffic")
+_PHONE_RE = re.compile(r"\+?971[\s-]?5\d[\s-]?\d{3}[\s-]?\d{4}")
+
+
+class DubizzleAdapter(PlatformAdapter):
+    platform: ClassVar[str] = "dubizzle"
+    default_currency: ClassVar[str] = "AED"
+    CARD_SELECTOR: ClassVar[str] = _CARD_SELECTORS[0]
+    BLOCK_SELECTORS: ClassVar[tuple[str, ...]] = _CARD_SELECTORS
+
+    def search_url(self, filters: SearchFilters, page: int) -> str:
+        purpose_seg = _PURPOSE_SEGMENT.get(filters.purpose, "property-for-sale")
+        type_seg = _TYPE_SEGMENT.get(filters.property_type, "apartment")
+        params = [f"keywords={quote(filters.location)}"]
+        bedrooms = 0 if filters.property_type == "studio" else filters.bedrooms
+        if bedrooms is not None:
+            params.append(f"bedrooms={bedrooms}")
+        if filters.bathrooms is not None:
+            # Unverified server-side param (see module docstring) — harmless if dubizzle ignores
+            # it; capture.py's client-side floor is the real enforcement either way.
+            params.append(f"bathrooms={filters.bathrooms}")
+        if page > 1:
+            params.append(f"page={page}")
+        return f"{BASE_URL}/en/{purpose_seg}/residential/{type_seg}/?{'&'.join(params)}"
+
+    async def prepare_page(self, page: Page) -> None:
+        for selector in (
+            'button:has-text("Accept")',
+            'button[aria-label="Close"]',
+            'button:has-text("Got it")',
+        ):
+            try:
+                el = await page.query_selector(selector)
+                if el is not None:
+                    await el.click(timeout=1500)
+                    await page.wait_for_timeout(300)
+            except Exception as exc:  # noqa: BLE001 - banner dismissal is best-effort
+                logger.debug("dubizzle banner dismiss skipped", selector=selector, error=str(exc))
+
+    async def is_blocked(self, page: Page) -> bool:
+        if "/sorry/" in page.url or "/blocked" in page.url:
+            return True
+        try:
+            body = await page.inner_text("body")
+        except Exception:  # noqa: BLE001 - a torn-down page must not crash the block check
+            return False
+        lowered = body.lower()
+        return any(t in lowered for t in _BLOCKED_TEXT)
+
+    async def extract_card(self, card: ElementHandle) -> DomListingFields:
+        text = (await card.inner_text()).strip()
+        lines = [ln for ln in text.split("\n") if ln.strip()]
+
+        anchor = await card.query_selector(
+            'a[href*="/property-for-sale/"], a[href*="/property-for-rent/"]'
+        )
+        href = (await anchor.get_attribute("href")) if anchor is not None else None
+        listing_url = self.normalize_listing_url(href, BASE_URL) if href else None
+
+        image_el = await card.query_selector("img")
+        image_url = (await image_el.get_attribute("src")) if image_el is not None else None
+
+        title, location_text = pp.guess_title_and_location(lines)
+        price = pp.parse_price(text)
+        bedrooms = pp.parse_bedrooms(text)
+        bathrooms = pp.parse_bathrooms(text)
+        area = pp.parse_area_sqft(text)
+
+        return DomListingFields(
+            title=title,
+            listing_url=listing_url,
+            image_url=image_url,
+            price=price.value,
+            currency=self.default_currency,
+            area_sqft=area.value,
+            bedrooms=bedrooms.value,
+            bathrooms=bathrooms.value,
+            location_text=location_text,
+            verified=pp.parse_verified(text),
+        )
+
+    def listing_key(self, href: str | None) -> str | None:
+        if not href:
+            return None
+        m = _LISTING_ID_RE.search(href)
+        return m.group(1) if m else None
+
+    async def extract_detail(self, page: Page) -> DomDetailFields:
+        phone: str | None = None
+        try:
+            call_btn = await page.query_selector('button:has-text("Call")')
+            if call_btn is not None:
+                await call_btn.click(timeout=5000)
+                await page.wait_for_timeout(2000)
+                body = await page.inner_text("body")
+                m = _PHONE_RE.search(body)
+                if m:
+                    phone = re.sub(r"[\s-]", "", m.group(0))
+                    if not phone.startswith("+"):
+                        phone = "+" + phone
+        except Exception as exc:  # noqa: BLE001 - phone reveal is best-effort, never blocks the job
+            logger.info("dubizzle phone reveal failed", error=str(exc))
+
+        description: str | None = None
+        try:
+            read_more = await page.query_selector('button:has-text("Read More")')
+            if read_more is not None:
+                await read_more.click(timeout=2000)
+                await page.wait_for_timeout(300)
+            desc_el = await page.query_selector('[class*="description"], [class*="Description"]')
+            if desc_el is not None:
+                description = (await desc_el.inner_text()).strip() or None
+        except Exception as exc:  # noqa: BLE001 - description is best-effort
+            logger.debug("dubizzle description extraction skipped", error=str(exc))
+
+        image_urls: list[str] = []
+        try:
+            srcs = await page.eval_on_selector_all(
+                "img[src]", "els => els.map(e => e.getAttribute('src'))"
+            )
+            image_urls = list(
+                dict.fromkeys(
+                    s
+                    for s in srcs
+                    if s and ("dubizzle" in s or "olx" in s) and "logo" not in s.lower()
+                )
+            )[:20]
+        except Exception as exc:  # noqa: BLE001 - image gallery is best-effort
+            logger.debug("dubizzle image gallery extraction skipped", error=str(exc))
+
+        return DomDetailFields(description=description, phone_number=phone, image_urls=image_urls)

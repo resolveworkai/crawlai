@@ -80,6 +80,21 @@ class Settings(BaseSettings):
     transport; only the operator's real Chrome gets through). Left None in the containerized
     daemon (which handles only non-CDP platforms); set on the host runner (run_noon_host.py)."""
 
+    # Property Research module (property/) — dubizzle.com/propertyfinder.ae listing capture +
+    # OCR fallback + distress-deal scoring. A THIRD SEPARATE module, own storage dir, own tables.
+    # Reuses tesseract_cmd/ocr_concurrency as-is. UNLIKE ecom (which has a headless-capable
+    # platform, amazon, and a container daemon that LISTENs on a pg_notify channel), EVERY
+    # property platform requires CDP (both dubizzle and propertyfinder block plain headless
+    # Chromium — confirmed 2026-08-22), so there is no property_headless flag AND no pg_notify
+    # channel at all — only the host runner (run_property_host.py) ever processes these jobs, on
+    # a plain poll loop (PROPERTY_HOST_POLL_SECONDS), with property_cdp_url always set. If a
+    # future property platform turns out to be headless-capable, that's when a pg_notify channel
+    # + a container-daemon claim branch would actually make sense — don't add one before that.
+    property_captures_dir: str = "./storage/property_captures"
+    property_nav_timeout_ms: int = Field(default=45000, gt=0)
+    property_device_scale: int = Field(default=2, ge=1, le=4)
+    property_cdp_url: str | None = None
+
 
 def load_settings() -> Settings:
     return Settings()

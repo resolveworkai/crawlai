@@ -62,6 +62,11 @@ const envSchema = z.object({
   // separate (own worker package, own storage dir — see the ecom-crawl migration's header
   // comment). Default matches business_scout_worker/settings.py's ecom_captures_dir default.
   ECOM_CAPTURES_DIR: z.string().min(1).default("./storage/ecom_captures"),
+  // Property Research module (dubizzle.com/propertyfinder.ae) — where captured listing-card
+  // screenshots live (one subfolder per job), same shape as ECOM_CAPTURES_DIR above but its own
+  // dir (own worker package `property/`, own tables — see the property-crawl migration's header
+  // comment). Default matches business_scout_worker/settings.py's property_captures_dir default.
+  PROPERTY_CAPTURES_DIR: z.string().min(1).default("./storage/property_captures"),
   // Marketing / Messaging tool — 64 hex chars (32 bytes) that encrypt the operator's SMTP
   // password at rest (AES-256-GCM, lib/messagingCrypto). Absent = email-credential save/test
   // refuse with a clear message (isEncryptionAvailable() === false), rather than the app failing

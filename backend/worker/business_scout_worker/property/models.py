@@ -1,0 +1,150 @@
+"""Authored by: Mohit Singh
+
+Row/DTO models for the Property Research flow — a THIRD parallel job type, SEPARATE from both the
+Google Maps Crawl-OCR module (ocr/) and the e-commerce Product Research module (ecom/). PropertyJob
+mirrors property_jobs (see db/migrations/1785300000000_property-crawl.sql); CapturedListing is the
+per-listing handoff from capture (Stage A) to OCR-fallback + parsing (Stage B); ParsedListing is
+Stage B/C's output, upserted into property_listings. Nothing here imports from or is imported by
+ocr/ or ecom/'s models.
+"""
+
+from __future__ import annotations
+
+from datetime import datetime
+from typing import Literal
+from uuid import UUID
+
+from pydantic import BaseModel, ConfigDict
+
+Platform = Literal["dubizzle", "propertyfinder"]
+PropertyType = Literal["apartment", "villa", "townhouse", "penthouse", "studio"]
+Purpose = Literal["buy", "rent"]
+PropertyJobStatus = Literal[
+    "queued", "capturing", "parsing", "detail", "scoring", "ready", "failed", "blocked"
+]
+PropertyEndReason = Literal[
+    "end_of_results", "max_pages", "max_listings", "stagnation", "blocked", "error"
+]
+ExtractionSource = Literal["dom", "dom+ocr", "ocr"]
+
+
+class PropertyJob(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    created_by: UUID | None
+    platform: Platform
+    location: str
+    bedrooms: int | None
+    bathrooms: int | None
+    property_type: PropertyType
+    purpose: Purpose
+    max_pages: int
+    max_listings: int
+    detail_scrape_top_n: int
+    whatsapp_message_template: str | None
+    score_weights: dict[str, float] | None
+    status: PropertyJobStatus
+    end_reason: PropertyEndReason | None
+    total_count: int
+    captured_count: int
+    detail_done_count: int
+    current_listing: str | None
+    error_message: str | None
+    storage_dir: str | None
+    retry_count: int
+    created_at: datetime
+    started_at: datetime | None
+    finished_at: datetime | None
+
+
+class DomListingFields(BaseModel):
+    """Structured fields read straight from a platform's search-result card DOM at capture time —
+    authoritative, exact, no OCR. Adapters populate whatever their card markup exposes; anything
+    left None falls back to the OCR pass in Stage B (see property/parse_property.py)."""
+
+    title: str | None = None
+    listing_url: str | None = None
+    image_url: str | None = None
+    price: float | None = None
+    currency: str | None = None
+    area_sqft: float | None = None
+    bedrooms: int | None = None
+    bathrooms: int | None = None
+    property_type: str | None = None
+    location_text: str | None = None
+    community: str | None = None
+    listed_days_ago: int | None = None
+    verified: bool = False
+    badges: list[str] = []
+
+
+class CapturedListing(BaseModel):
+    """One listing captured off a search-results page. `title`/`listing_url`/`image_url` +
+    everything the adapter's `extract_card` populates in `dom` come straight from the DOM
+    (authoritative); `images` are the relative screenshot paths under the job dir that Stage B
+    OCRs as a fallback for whatever the DOM didn't expose plus the visual audit trail."""
+
+    idx: int
+    page_num: int = 1
+    title: str
+    listing_url: str | None = None
+    image_url: str | None = None
+    images: list[str] = []
+    dom: DomListingFields = DomListingFields()
+    listing_key: str | None = None
+
+
+class PropertyManifest(BaseModel):
+    job_id: str
+    platform: Platform
+    location: str
+    started_at: str
+    end_reason: PropertyEndReason
+    items: list[CapturedListing] = []
+
+
+class DomDetailFields(BaseModel):
+    """Detail-page deep-scrape fields, populated only for the job's `detail_scrape_top_n` highest-
+    scoring listings. Never fabricated — absence means the detail page wasn't scraped or the
+    adapter couldn't find the field (e.g. no phone revealed without an extra click the adapter
+    doesn't perform)."""
+
+    description: str | None = None
+    agent_name: str | None = None
+    phone_number: str | None = None
+    image_urls: list[str] = []
+
+
+class ParsedListing(BaseModel):
+    """Stage B/C output for one listing — what gets upserted into property_listings."""
+
+    idx: int
+    page_num: int = 1
+    title: str
+    listing_url: str | None = None
+    image_urls: list[str] = []
+    price: float | None = None
+    currency: str = "AED"
+    area_sqft: float | None = None
+    price_per_sqft: float | None = None
+    bedrooms: int | None = None
+    bathrooms: int | None = None
+    property_type: str | None = None
+    location_text: str | None = None
+    community: str | None = None
+    listed_days_ago: int | None = None
+    verified: bool = False
+    badges: list[str] = []
+    distress_keywords: list[str] = []
+    agent_name: str | None = None
+    phone_number: str | None = None
+    whatsapp_link: str | None = None
+    description: str | None = None
+    distress_score: float | None = None
+    extraction_source: ExtractionSource = "dom"
+    ocr_confidence: float | None = None
+    needs_review: bool = False
+    raw_text: str | None = None
+    source_images: list[str] = []
+    detail_scraped: bool = False

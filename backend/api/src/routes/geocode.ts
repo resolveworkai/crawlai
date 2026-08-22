@@ -2,8 +2,8 @@
 import { Router } from "express";
 import { requireAuth } from "../middleware/auth.js";
 import { validate } from "../middleware/validate.js";
-import { geocodeQuerySchema } from "../schemas/geocode.js";
-import { geocode } from "../lib/geocode.js";
+import { geocodeQuerySchema, geocodeSuggestQuerySchema } from "../schemas/geocode.js";
+import { geocode, geocodeSuggestions } from "../lib/geocode.js";
 
 export const geocodeRouter = Router();
 
@@ -18,5 +18,19 @@ geocodeRouter.get(
     const { q } = req.validatedQuery as unknown as { q: string };
     const result = await geocode(q);
     res.json({ result });
+  },
+);
+
+// Multi-result variant for as-you-type location autocomplete — same Nominatim proxy as /geocode
+// above, just returns up to `limit` candidates instead of collapsing to the single best match.
+// Used by the Property Research location field (routes/property-crawl.tsx).
+geocodeRouter.get(
+  "/geocode/suggest",
+  requireAuth,
+  validate(geocodeSuggestQuerySchema, "query"),
+  async (req, res) => {
+    const { q, limit } = req.validatedQuery as unknown as { q: string; limit: number };
+    const results = await geocodeSuggestions(q, limit);
+    res.json({ results });
   },
 );

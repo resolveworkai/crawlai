@@ -329,6 +329,152 @@ export interface EcomAnalysis {
   topOpportunities: EcomTopOpportunity[];
 }
 
+// --- Property Research (Property-Crawl) module — a THIRD, deliberately separate module (see
+// routes/property-crawl.tsx's header). Mirrors backend/api/src/types/db.ts's PropertyJob/
+// PropertyListing + services/propertyAnalysisService.ts's PropertyAnalysis exactly. Both
+// platforms require the host runner (real Chrome via CDP) — neither is headless-capable. ---
+
+export type PropertyPlatform = "dubizzle" | "propertyfinder";
+
+export type PropertyType = "apartment" | "villa" | "townhouse" | "penthouse" | "studio";
+
+export type PropertyPurpose = "buy" | "rent";
+
+export type PropertyJobStatus =
+  "queued" | "capturing" | "parsing" | "detail" | "scoring" | "ready" | "failed" | "blocked";
+
+export type PropertyEndReason =
+  "end_of_results" | "max_pages" | "max_listings" | "stagnation" | "blocked" | "error";
+
+export interface PropertyScoreWeights {
+  value?: number;
+  keywords?: number;
+  freshness?: number;
+  verified?: number;
+}
+
+export interface PropertyJob {
+  id: string;
+  created_by: string | null;
+  platform: PropertyPlatform;
+  location: string;
+  bedrooms: number | null;
+  bathrooms: number | null;
+  property_type: PropertyType;
+  purpose: PropertyPurpose;
+  max_pages: number;
+  max_listings: number;
+  detail_scrape_top_n: number;
+  whatsapp_message_template: string | null;
+  score_weights: PropertyScoreWeights | null;
+  status: PropertyJobStatus;
+  end_reason: PropertyEndReason | null;
+  total_count: number;
+  captured_count: number;
+  detail_done_count: number;
+  // Live "what is it on right now" — mirrors EcomJob's current_product.
+  current_listing: string | null;
+  error_message: string | null;
+  storage_dir: string | null;
+  // Resumable retry (see hooks/usePropertyCrawl.ts's useRetryPropertyJob) — capped server-side
+  // at 3.
+  retry_count: number;
+  created_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+}
+
+export type PropertyExtractionSource = "dom" | "dom+ocr" | "ocr";
+
+export interface PropertyListing {
+  id: string;
+  job_id: string;
+  idx: number;
+  page_num: number;
+  title: string;
+  listing_url: string | null;
+  // The SITE's own photo URLs — links only, never downloaded/proxied. Click through to the real
+  // ad, never a locally-hosted copy.
+  image_urls: string[];
+  // NUMERIC(14,2)/NUMERIC(10,2) columns — pg returns these as strings (no custom type parser
+  // registered), same convention as EcomProduct.price above. Parse with Number(...) at render
+  // time.
+  price: string | null;
+  currency: string | null;
+  area_sqft: string | null;
+  price_per_sqft: string | null;
+  bedrooms: number | null;
+  bathrooms: number | null;
+  property_type: string | null;
+  location_text: string | null;
+  community: string | null;
+  listed_days_ago: number | null;
+  verified: boolean;
+  badges: string[];
+  distress_keywords: string[];
+  agent_name: string | null;
+  // Only populated for the job's detail_scrape_top_n highest-scoring listings.
+  phone_number: string | null;
+  whatsapp_link: string | null;
+  description: string | null;
+  distress_score: number | null;
+  extraction_source: PropertyExtractionSource;
+  ocr_confidence: number | null;
+  needs_review: boolean;
+  raw_text: string | null;
+  source_images: string[];
+  detail_scraped: boolean;
+  created_at: string;
+}
+
+export interface PropertyAnalysisSummary {
+  listingCount: number;
+  needsReviewCount: number;
+  detailScrapedCount: number;
+  price: {
+    min: number | null;
+    max: number | null;
+    p25: number | null;
+    median: number | null;
+    p75: number | null;
+  };
+  pricePerSqft: { min: number | null; max: number | null; median: number | null };
+  avgListedDaysAgo: number | null;
+  pctVerified: number | null;
+}
+
+export interface PropertyCommunityBreakdown {
+  community: string;
+  count: number;
+  medianPrice: number | null;
+  medianPricePerSqft: number | null;
+}
+
+export interface PropertyTopListing {
+  id: string;
+  idx: number;
+  title: string;
+  price: number | null;
+  areaSqft: number | null;
+  pricePerSqft: number | null;
+  bedrooms: number | null;
+  bathrooms: number | null;
+  community: string | null;
+  distressScore: number | null;
+  distressKeywords: string[];
+  listingUrl: string | null;
+  imageUrl: string | null;
+  whatsappLink: string | null;
+  phoneNumber: string | null;
+}
+
+export interface PropertyAnalysis {
+  jobId: string;
+  summary: PropertyAnalysisSummary;
+  communityBreakdown: PropertyCommunityBreakdown[];
+  top10: PropertyTopListing[];
+}
+
 // --- Marketing / Messaging (see md/MARKETING.md) ---
 
 export type MessageChannel = "whatsapp" | "email";
