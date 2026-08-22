@@ -57,6 +57,7 @@ propertyCrawlRouter.post(
       bathrooms: input.bathrooms,
       propertyType: input.propertyType,
       purpose: input.purpose,
+      propertyStatus: input.propertyStatus,
       maxPages: input.maxPages,
       maxListings: input.maxListings,
       detailScrapeTopN: input.detailScrapeTopN,

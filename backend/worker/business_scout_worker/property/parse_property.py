@@ -223,6 +223,7 @@ def parse_listing(
         listed_days_ago=listed_days,
         verified=dom.verified,
         badges=dom.badges,
+        is_offplan=dom.is_offplan,
         distress_keywords=keywords,
         extraction_source=extraction_source,
         ocr_confidence=ocr_confidence if ocr_text else None,

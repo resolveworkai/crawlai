@@ -18,6 +18,9 @@ export const createPropertyJobSchema = z.object({
     .enum(["apartment", "villa", "townhouse", "penthouse", "studio"])
     .default("apartment"),
   purpose: z.enum(["buy", "rent"]).default("buy"),
+  // No confirmed server-side URL param for either platform — enforced client-side at capture time
+  // against each listing's own is_offplan flag. Defaults to "ready" (confirmed preference).
+  propertyStatus: z.enum(["ready", "offplan", "any"]).default("ready"),
   maxPages: z.coerce.number().int().min(1).max(20).default(3),
   maxListings: z.coerce.number().int().positive().max(500).default(100),
   // How many of the top-ranked (by distress_score) listings get a detail-page visit to reveal a

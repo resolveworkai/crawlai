@@ -13,6 +13,7 @@ import type {
   PropertyPlatform,
   PropertyPurpose,
   PropertyScoreWeights,
+  PropertyStatus,
   PropertyType,
 } from "@/types/api";
 
@@ -31,6 +32,7 @@ interface CreatePropertyJobInput {
   bathrooms?: number;
   propertyType?: PropertyType;
   purpose?: PropertyPurpose;
+  propertyStatus?: PropertyStatus;
   maxPages?: number;
   maxListings?: number;
   detailScrapeTopN?: number;

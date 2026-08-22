@@ -79,6 +79,7 @@ async def run_property_job(
             bathrooms=job.bathrooms,
             property_type=job.property_type,
             purpose=job.purpose,
+            property_status=job.property_status,
         )
 
         manifest_path = job_dir / "manifest.json"
@@ -244,6 +245,7 @@ async def run_property_job(
                 listing.whatsapp_link = cast("str | None", detail.get("whatsapp_link"))
                 listing.age_years = cast("int | None", detail.get("age_years"))
                 listing.average_rent = cast("float | None", detail.get("average_rent"))
+                listing.listed_date = cast("str | None", detail.get("listed_date"))
                 detail_images = cast("list[str]", detail.get("image_urls") or [])
                 if detail_images:
                     listing.image_urls = detail_images

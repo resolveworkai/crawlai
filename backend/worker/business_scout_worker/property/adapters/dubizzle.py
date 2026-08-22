@@ -172,6 +172,9 @@ class DubizzleAdapter(PlatformAdapter):
         area_val = await _testid_number(card, "listing-size")
         location_val = await _testid_text(card, "listing-location")
         property_type_val = await _testid_text(card, "category-text")
+        # Confirmed live 2026-08-22: presence of this testid IS the off-plan signal — a ready/
+        # resale card simply doesn't render it at all (not a "false" value, an absent element).
+        offplan_el = await card.query_selector('[data-testid="offplan-badge"]')
 
         # Regex/heuristic fallback for whatever a testid selector didn't find.
         title, heuristic_location = pp.guess_title_and_location(lines)
@@ -192,6 +195,7 @@ class DubizzleAdapter(PlatformAdapter):
             property_type=property_type_val,
             location_text=location_val or heuristic_location,
             verified=pp.parse_verified(text),
+            is_offplan=offplan_el is not None,
         )
 
     def listing_key(self, href: str | None) -> str | None:
@@ -257,6 +261,16 @@ class DubizzleAdapter(PlatformAdapter):
         except Exception as exc:  # noqa: BLE001 - not every listing/building has a rent estimate
             logger.debug("dubizzle average-rent extraction skipped", error=str(exc))
 
+        listed_date: str | None = None
+        try:
+            posted_text = await _testid_text(page, "posted-on")
+            if posted_text:
+                # Confirmed live: "Posted on:\xa04th June 2026" — strip the label, keep the raw
+                # date string as-is (never parsed into a structured date — see module docstring).
+                listed_date = re.sub(r"^Posted on:\s*", "", posted_text, flags=re.I).strip() or None
+        except Exception as exc:  # noqa: BLE001 - posted date is best-effort
+            logger.debug("dubizzle posted-date extraction skipped", error=str(exc))
+
         image_urls: list[str] = []
         try:
             srcs = await page.eval_on_selector_all(
@@ -278,4 +292,5 @@ class DubizzleAdapter(PlatformAdapter):
             image_urls=image_urls,
             age_years=age_years,
             average_rent=average_rent,
+            listed_date=listed_date,
         )

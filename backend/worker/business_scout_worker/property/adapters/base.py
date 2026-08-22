@@ -16,7 +16,12 @@ from urllib.parse import urljoin, urlsplit, urlunsplit
 
 from playwright.async_api import BrowserContext, ElementHandle, Locator, Page
 
-from business_scout_worker.property.models import DomDetailFields, DomListingFields, Purpose
+from business_scout_worker.property.models import (
+    DomDetailFields,
+    DomListingFields,
+    PropertyStatus,
+    Purpose,
+)
 
 _TRACKING_PARAM_PREFIXES = ("utm_", "ref", "gclid", "fbclid")
 
@@ -34,12 +39,14 @@ class SearchFilters:
         bathrooms: int | None,
         property_type: str,
         purpose: Purpose,
+        property_status: PropertyStatus = "ready",
     ) -> None:
         self.location = location
         self.bedrooms = bedrooms
         self.bathrooms = bathrooms
         self.property_type = property_type
         self.purpose = purpose
+        self.property_status = property_status
 
 
 class PlatformAdapter(ABC):

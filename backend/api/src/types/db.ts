@@ -372,6 +372,11 @@ export type PropertyJobStatus =
 export type PropertyEndReason =
   "end_of_results" | "max_pages" | "max_listings" | "stagnation" | "blocked" | "error";
 
+// No confirmed server-side URL param for either platform (see the worker's capture.py) — enforced
+// client-side against each listing's own is_offplan flag. Defaults to "ready" (confirmed
+// preference).
+export type PropertyStatus = "ready" | "offplan" | "any";
+
 export interface PropertyScoreWeights {
   value?: number | undefined;
   keywords?: number | undefined;
@@ -388,6 +393,7 @@ export interface PropertyJob {
   bathrooms: number | null;
   property_type: PropertyType;
   purpose: PropertyPurpose;
+  property_status: PropertyStatus;
   max_pages: number;
   max_listings: number;
   detail_scrape_top_n: number;
@@ -433,6 +439,8 @@ export interface PropertyListing {
   listed_days_ago: number | null;
   verified: boolean;
   badges: string[];
+  // Confirmed live 2026-08-22 (dubizzle) — a card's own offplan-badge presence.
+  is_offplan: boolean;
   distress_keywords: string[];
   agent_name: string | null;
   // Only populated for the job's detail_scrape_top_n highest-scoring listings.

@@ -136,13 +136,13 @@ async def upsert_property_listing(
             INSERT INTO property_listings (
                 job_id, idx, page_num, title, listing_url, image_urls, price, currency,
                 area_sqft, price_per_sqft, bedrooms, bathrooms, property_type, location_text,
-                community, listed_days_ago, verified, badges, distress_keywords, agent_name,
-                phone_number, whatsapp_link, description, age_years, average_rent, distress_score,
-                extraction_source, ocr_confidence, needs_review, raw_text, source_images,
-                detail_scraped
+                community, listed_days_ago, verified, badges, is_offplan, distress_keywords,
+                agent_name, phone_number, whatsapp_link, description, age_years, average_rent,
+                listed_date, distress_score, extraction_source, ocr_confidence, needs_review,
+                raw_text, source_images, detail_scraped
             ) VALUES (
                 %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+                %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
             )
             ON CONFLICT (job_id, idx) DO UPDATE SET
                 title = EXCLUDED.title,
@@ -160,6 +160,7 @@ async def upsert_property_listing(
                 listed_days_ago = EXCLUDED.listed_days_ago,
                 verified = EXCLUDED.verified,
                 badges = EXCLUDED.badges,
+                is_offplan = EXCLUDED.is_offplan,
                 distress_keywords = EXCLUDED.distress_keywords,
                 agent_name = EXCLUDED.agent_name,
                 phone_number = EXCLUDED.phone_number,
@@ -167,6 +168,7 @@ async def upsert_property_listing(
                 description = EXCLUDED.description,
                 age_years = EXCLUDED.age_years,
                 average_rent = EXCLUDED.average_rent,
+                listed_date = EXCLUDED.listed_date,
                 distress_score = EXCLUDED.distress_score,
                 extraction_source = EXCLUDED.extraction_source,
                 ocr_confidence = EXCLUDED.ocr_confidence,
@@ -194,6 +196,7 @@ async def upsert_property_listing(
                 listing.listed_days_ago,
                 listing.verified,
                 Jsonb(listing.badges),
+                listing.is_offplan,
                 Jsonb(listing.distress_keywords),
                 listing.agent_name,
                 listing.phone_number,
@@ -201,6 +204,7 @@ async def upsert_property_listing(
                 listing.description,
                 listing.age_years,
                 listing.average_rent,
+                listing.listed_date,
                 listing.distress_score,
                 listing.extraction_source,
                 listing.ocr_confidence,

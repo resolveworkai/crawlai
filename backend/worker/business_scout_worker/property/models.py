@@ -19,6 +19,11 @@ from pydantic import BaseModel, ConfigDict
 Platform = Literal["dubizzle", "propertyfinder"]
 PropertyType = Literal["apartment", "villa", "townhouse", "penthouse", "studio"]
 Purpose = Literal["buy", "rent"]
+# "ready" (completed/resale) vs "offplan" (pre-construction) vs "any" (no filter). Confirmed live
+# 2026-08-22 on dubizzle: a card's `[data-testid="offplan-badge"]` presence is the real, reliable
+# signal — no server-side URL param confirmed for this, so it's enforced client-side at capture
+# time (see capture.py), same pattern as the bathroom floor.
+PropertyStatus = Literal["ready", "offplan", "any"]
 PropertyJobStatus = Literal[
     "queued", "capturing", "parsing", "detail", "scoring", "ready", "failed", "blocked"
 ]
@@ -39,6 +44,7 @@ class PropertyJob(BaseModel):
     bathrooms: int | None
     property_type: PropertyType
     purpose: Purpose
+    property_status: PropertyStatus = "ready"
     max_pages: int
     max_listings: int
     detail_scrape_top_n: int
@@ -77,6 +83,8 @@ class DomListingFields(BaseModel):
     listed_days_ago: int | None = None
     verified: bool = False
     badges: list[str] = []
+    # Confirmed live 2026-08-22 (dubizzle): a card's own `[data-testid="offplan-badge"]` presence.
+    is_offplan: bool = False
 
 
 class CapturedListing(BaseModel):
@@ -121,6 +129,10 @@ class DomDetailFields(BaseModel):
     # listing may have no "Property Age" at all — stays None, not fabricated as 0).
     age_years: int | None = None
     average_rent: float | None = None
+    # Confirmed live 2026-08-22 (dubizzle): the detail page's own `[data-testid="posted-on"]` field
+    # (e.g. "Posted on: 4th June 2026") — stored as the raw text after the "Posted on:" label
+    # rather than attempting a fragile string->date parse that could silently produce a wrong date.
+    listed_date: str | None = None
 
 
 class ParsedListing(BaseModel):
@@ -143,6 +155,7 @@ class ParsedListing(BaseModel):
     listed_days_ago: int | None = None
     verified: bool = False
     badges: list[str] = []
+    is_offplan: bool = False
     distress_keywords: list[str] = []
     agent_name: str | None = None
     phone_number: str | None = None
@@ -151,6 +164,7 @@ class ParsedListing(BaseModel):
     # Detail-page-only (see DomDetailFields) — populated only for detail_scrape_top_n listings.
     age_years: int | None = None
     average_rent: float | None = None
+    listed_date: str | None = None
     distress_score: float | None = None
     extraction_source: ExtractionSource = "dom"
     ocr_confidence: float | None = None

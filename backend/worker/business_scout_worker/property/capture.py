@@ -14,6 +14,10 @@ Bathroom filtering: neither platform's server-side `bathrooms=`/`bathf=` URL par
 actually narrow results (see the adapters' own docstrings) — this engine applies a CLIENT-SIDE
 floor (skip any captured listing whose parsed bathroom count is below the job's requested minimum)
 so the filter is enforced correctly regardless of whether the site's own param works.
+
+Ready/off-plan filtering: same story, no confirmed server-side param — `job.property_status`
+defaults to "ready" (the confirmed default preference) and is enforced client-side against each
+card's `is_offplan` flag (dubizzle's real `offplan-badge` testid, confirmed live 2026-08-22).
 """
 
 from __future__ import annotations
@@ -232,6 +236,12 @@ class PropertyCaptureEngine:
                             and dom.bathrooms < filters.bathrooms
                         ):
                             continue
+                        # Client-side ready/off-plan filter — no confirmed server-side URL param
+                        # for this (see PropertyStatus's docstring), so enforced here the same way.
+                        if filters.property_status == "ready" and dom.is_offplan:
+                            continue
+                        if filters.property_status == "offplan" and not dom.is_offplan:
+                            continue
                         seen.add(key)
                         new_count += 1
 
@@ -321,7 +331,7 @@ class PropertyCaptureEngine:
         """Visits each of the top-N ranked listings' detail pages, reveals the phone number, and
         builds a WhatsApp deep link. Capped at DETAIL_SCRAPE_HARD_CAP regardless of what's
         requested. Returns {idx: {description, agent_name, phone_number, whatsapp_link,
-        image_urls, age_years, average_rent}}."""
+        image_urls, age_years, average_rent, listed_date}}."""
         from business_scout_worker.property.whatsapp import build_whatsapp_link
 
         capped = top_listings[:DETAIL_SCRAPE_HARD_CAP]
@@ -359,6 +369,7 @@ class PropertyCaptureEngine:
                             "image_urls": detail.image_urls,
                             "age_years": detail.age_years,
                             "average_rent": detail.average_rent,
+                            "listed_date": detail.listed_date,
                         }
                     except PropertyInterruptedError:
                         raise

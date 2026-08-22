@@ -70,10 +70,12 @@ import {
 import { toast } from "sonner";
 import type {
   GeocodeResult,
+  PropertyJob,
   PropertyJobStatus,
   PropertyListing,
   PropertyPlatform,
   PropertyPurpose,
+  PropertyStatus,
   PropertyType,
 } from "@/types/api";
 
@@ -157,6 +159,12 @@ const PURPOSE_OPTIONS: { value: PropertyPurpose; label: string }[] = [
   { value: "rent", label: "Rent" },
 ];
 
+const PROPERTY_STATUS_OPTIONS: { value: PropertyStatus; label: string }[] = [
+  { value: "ready", label: "Ready only" },
+  { value: "offplan", label: "Off-plan only" },
+  { value: "any", label: "Any" },
+];
+
 const BEDROOM_OPTIONS = [
   { value: "any", label: "Any" },
   { value: "0", label: "Studio (0)" },
@@ -188,6 +196,23 @@ function formatMoney(v: string | number | null, currency: string | null): string
 
 type SortKey = "distress_score" | "price" | "price_per_sqft" | "area_sqft" | "listed_days_ago";
 
+// The search criteria a job was launched with, condensed to one line for the recent-jobs list —
+// so each row shows what was actually searched for, not just platform + location.
+function jobFilterSummary(j: PropertyJob): string {
+  const parts: string[] = [
+    j.property_type,
+    j.purpose,
+    j.bedrooms !== null ? (j.bedrooms === 0 ? "Studio" : `${j.bedrooms}BR`) : null,
+    j.bathrooms !== null ? `${j.bathrooms} bath` : null,
+    j.property_status !== "any"
+      ? j.property_status === "ready"
+        ? "ready only"
+        : "off-plan only"
+      : null,
+  ].filter((p): p is string => p !== null);
+  return parts.join(" · ");
+}
+
 function PropertyCrawl() {
   const [platform, setPlatform] = useState<PropertyPlatform>("dubizzle");
   const [location, setLocation] = useState("");
@@ -195,6 +220,8 @@ function PropertyCrawl() {
   const [bedrooms, setBedrooms] = useState("any");
   const [bathrooms, setBathrooms] = useState("any");
   const [purpose, setPurpose] = useState<PropertyPurpose>("buy");
+  // Confirmed preference: ready-only by default (see createPropertyJobSchema's own default).
+  const [propertyStatus, setPropertyStatus] = useState<PropertyStatus>("ready");
   const [maxPages, setMaxPages] = useState(3);
   const [maxListings, setMaxListings] = useState(100);
   const [detailScrapeTopN, setDetailScrapeTopN] = useState(10);
@@ -290,6 +317,7 @@ function PropertyCrawl() {
         bedrooms: bedrooms === "any" ? undefined : Number(bedrooms),
         bathrooms: bathrooms === "any" ? undefined : Number(bathrooms),
         purpose,
+        propertyStatus,
         maxPages,
         maxListings,
         detailScrapeTopN,
@@ -385,6 +413,24 @@ function PropertyCrawl() {
               </SelectTrigger>
               <SelectContent>
                 {BATHROOM_OPTIONS.map((opt) => (
+                  <SelectItem key={opt.value} value={opt.value}>
+                    {opt.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <div>
+            <label className="text-xs text-muted-foreground">Status</label>
+            <Select
+              value={propertyStatus}
+              onValueChange={(v) => setPropertyStatus(v as PropertyStatus)}
+            >
+              <SelectTrigger className="mt-1 h-9 bg-input">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {PROPERTY_STATUS_OPTIONS.map((opt) => (
                   <SelectItem key={opt.value} value={opt.value}>
                     {opt.label}
                   </SelectItem>
@@ -739,20 +785,25 @@ function PropertyCrawl() {
             <button
               key={j.id}
               onClick={() => setSelectedId(j.id)}
-              className={`flex w-full flex-col gap-1 px-4 py-2.5 text-left text-sm hover:bg-accent/30 sm:flex-row sm:items-center sm:justify-between sm:gap-3 ${
+              className={`flex w-full flex-col gap-1 px-4 py-2.5 text-left text-sm hover:bg-accent/30 ${
                 j.id === focusId ? "bg-accent/20" : ""
               }`}
             >
-              <span className="min-w-0 truncate">
-                <span className="font-medium capitalize">{j.platform}</span>{" "}
-                <span className="text-muted-foreground">· {j.location}</span>
-              </span>
-              <span className="flex shrink-0 items-center gap-3 text-xs">
-                <span className={STATUS_COLOR[j.status]}>{j.status}</span>
-                <span className="text-muted-foreground">{j.captured_count} listings</span>
-                <span className="font-mono text-[10px] text-muted-foreground">
-                  {timeAgo(j.created_at)}
+              <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between sm:gap-3">
+                <span className="min-w-0 truncate">
+                  <span className="font-medium capitalize">{j.platform}</span>{" "}
+                  <span className="text-muted-foreground">· {j.location}</span>
                 </span>
+                <span className="flex shrink-0 items-center gap-3 text-xs">
+                  <span className={STATUS_COLOR[j.status]}>{j.status}</span>
+                  <span className="text-muted-foreground">{j.captured_count} listings</span>
+                  <span className="font-mono text-[10px] text-muted-foreground">
+                    {timeAgo(j.created_at)}
+                  </span>
+                </span>
+              </div>
+              <span className="truncate text-[11px] text-muted-foreground">
+                {jobFilterSummary(j)}
               </span>
             </button>
           ))}
@@ -960,6 +1011,14 @@ function ResultRow({ l, jobId }: { l: PropertyListing; jobId: string }) {
                 review
               </span>
             )}
+            {l.is_offplan && (
+              <span
+                title="Off-plan listing"
+                className="shrink-0 rounded bg-primary/15 px-1 text-[9px] uppercase text-primary"
+              >
+                off-plan
+              </span>
+            )}
           </div>
           <span className="truncate text-[11px] text-muted-foreground">
             {l.community ?? l.location_text ?? "—"}
@@ -972,6 +1031,9 @@ function ResultRow({ l, jobId }: { l: PropertyListing; jobId: string }) {
               {l.age_years !== null && l.average_rent !== null && " · "}
               {l.average_rent !== null && `~AED ${Number(l.average_rent).toLocaleString()}/yr rent`}
             </span>
+          )}
+          {l.listed_date !== null && (
+            <span className="text-[11px] text-muted-foreground">Posted {l.listed_date}</span>
           )}
           {l.distress_keywords.length > 0 && (
             <div className="flex flex-wrap gap-1">

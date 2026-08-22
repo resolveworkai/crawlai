@@ -340,6 +340,10 @@ export type PropertyType = "apartment" | "villa" | "townhouse" | "penthouse" | "
 
 export type PropertyPurpose = "buy" | "rent";
 
+// No confirmed server-side URL param for either platform — enforced client-side at capture time
+// against each listing's own is_offplan flag. Defaults to "ready" (confirmed preference).
+export type PropertyStatus = "ready" | "offplan" | "any";
+
 export type PropertyJobStatus =
   "queued" | "capturing" | "parsing" | "detail" | "scoring" | "ready" | "failed" | "blocked";
 
@@ -362,6 +366,7 @@ export interface PropertyJob {
   bathrooms: number | null;
   property_type: PropertyType;
   purpose: PropertyPurpose;
+  property_status: PropertyStatus;
   max_pages: number;
   max_listings: number;
   detail_scrape_top_n: number;
@@ -411,6 +416,8 @@ export interface PropertyListing {
   listed_days_ago: number | null;
   verified: boolean;
   badges: string[];
+  // Confirmed live 2026-08-22 (dubizzle) — a card's own offplan-badge presence.
+  is_offplan: boolean;
   distress_keywords: string[];
   agent_name: string | null;
   // Only populated for the job's detail_scrape_top_n highest-scoring listings.
@@ -422,6 +429,9 @@ export interface PropertyListing {
   // string, same convention as price/area_sqft above.
   age_years: number | null;
   average_rent: string | null;
+  // Detail-page-only, dubizzle's own "posted-on" field — raw text (e.g. "4th June 2026"), not
+  // parsed into a date.
+  listed_date: string | null;
   distress_score: number | null;
   extraction_source: PropertyExtractionSource;
   ocr_confidence: number | null;
