@@ -137,11 +137,12 @@ async def upsert_property_listing(
                 job_id, idx, page_num, title, listing_url, image_urls, price, currency,
                 area_sqft, price_per_sqft, bedrooms, bathrooms, property_type, location_text,
                 community, listed_days_ago, verified, badges, distress_keywords, agent_name,
-                phone_number, whatsapp_link, description, distress_score, extraction_source,
-                ocr_confidence, needs_review, raw_text, source_images, detail_scraped
+                phone_number, whatsapp_link, description, age_years, average_rent, distress_score,
+                extraction_source, ocr_confidence, needs_review, raw_text, source_images,
+                detail_scraped
             ) VALUES (
                 %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+                %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
             )
             ON CONFLICT (job_id, idx) DO UPDATE SET
                 title = EXCLUDED.title,
@@ -164,6 +165,8 @@ async def upsert_property_listing(
                 phone_number = EXCLUDED.phone_number,
                 whatsapp_link = EXCLUDED.whatsapp_link,
                 description = EXCLUDED.description,
+                age_years = EXCLUDED.age_years,
+                average_rent = EXCLUDED.average_rent,
                 distress_score = EXCLUDED.distress_score,
                 extraction_source = EXCLUDED.extraction_source,
                 ocr_confidence = EXCLUDED.ocr_confidence,
@@ -196,6 +199,8 @@ async def upsert_property_listing(
                 listing.phone_number,
                 listing.whatsapp_link,
                 listing.description,
+                listing.age_years,
+                listing.average_rent,
                 listing.distress_score,
                 listing.extraction_source,
                 listing.ocr_confidence,

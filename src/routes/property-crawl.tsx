@@ -24,6 +24,16 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import {
+  Command,
+  CommandEmpty,
+  CommandGroup,
+  CommandInput,
+  CommandItem,
+  CommandList,
+} from "@/components/ui/command";
+import { Checkbox } from "@/components/ui/checkbox";
 import { RequireAuth } from "@/components/require-auth";
 import {
   propertyExportUrl,
@@ -55,6 +65,7 @@ import {
   ShieldCheck,
   Trash2,
   Trophy,
+  X,
 } from "lucide-react";
 import { toast } from "sonner";
 import type {
@@ -190,7 +201,14 @@ function PropertyCrawl() {
   const [whatsappTemplate, setWhatsappTemplate] = useState("");
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [selectedId, setSelectedId] = useState<string | undefined>(undefined);
-  const [sortKey, setSortKey] = useState<SortKey>("distress_score");
+  const [sortKey, setSortKey] = useState<SortKey>("price");
+
+  // Client-side results filters — applied AFTER a job's listings are captured, on top of
+  // whatever the job's own search criteria (location/bedrooms/bathrooms/property type) already
+  // narrowed. Empty communityFilter = no community restriction; empty sqftMin/sqftMax = no bound.
+  const [communityFilter, setCommunityFilter] = useState<Set<string>>(new Set());
+  const [sqftMin, setSqftMin] = useState("");
+  const [sqftMax, setSqftMax] = useState("");
 
   const { data: jobs = [] } = usePropertyJobs();
   const runningJob = jobs.find((j) => RUNNING.has(j.status));
@@ -210,8 +228,42 @@ function PropertyCrawl() {
   const deleteJob = useDeletePropertyJob();
   const retryJob = useRetryPropertyJob();
 
+  // Distinct community/building names actually present in this job's captured listings — always
+  // accurate to what was really scraped, never a fabricated/static list. A listing with neither
+  // `community` nor `location_text` set contributes nothing here (still shown by default; only
+  // excluded once the community filter is non-empty, same as every other listing that doesn't
+  // match a selected value).
+  const availableCommunities = useMemo(() => {
+    const set = new Set<string>();
+    for (const l of results) {
+      const c = l.community ?? l.location_text;
+      if (c) set.add(c);
+    }
+    return Array.from(set).sort((a, b) => a.localeCompare(b));
+  }, [results]);
+
+  const filtered = useMemo(() => {
+    const min = sqftMin.trim() === "" ? null : Number(sqftMin);
+    const max = sqftMax.trim() === "" ? null : Number(sqftMax);
+    return results.filter((l) => {
+      if (communityFilter.size > 0) {
+        const c = l.community ?? l.location_text;
+        if (!c || !communityFilter.has(c)) return false;
+      }
+      if (min !== null && Number.isFinite(min)) {
+        const area = num(l.area_sqft);
+        if (area === null || area < min) return false;
+      }
+      if (max !== null && Number.isFinite(max)) {
+        const area = num(l.area_sqft);
+        if (area === null || area > max) return false;
+      }
+      return true;
+    });
+  }, [results, communityFilter, sqftMin, sqftMax]);
+
   const sorted = useMemo(() => {
-    const rows = [...results];
+    const rows = [...filtered];
     rows.sort((a, b) => {
       if (sortKey === "price") return (num(a.price) ?? Infinity) - (num(b.price) ?? Infinity);
       if (sortKey === "price_per_sqft")
@@ -223,7 +275,7 @@ function PropertyCrawl() {
       return (b.distress_score ?? -Infinity) - (a.distress_score ?? -Infinity);
     });
     return rows;
-  }, [results, sortKey]);
+  }, [filtered, sortKey]);
 
   function handleLaunch() {
     if (location.trim() === "") {
@@ -554,8 +606,8 @@ function PropertyCrawl() {
               <span className="text-[11px] text-muted-foreground">Sort by</span>
               {(
                 [
-                  { key: "distress_score", label: "Best value" },
                   { key: "price", label: "Price ↑" },
+                  { key: "distress_score", label: "Best value" },
                   { key: "price_per_sqft", label: "AED/sqft ↑" },
                   { key: "area_sqft", label: "Area ↓" },
                   { key: "listed_days_ago", label: "Oldest first" },
@@ -577,18 +629,81 @@ function PropertyCrawl() {
           )}
 
           {showResults && (
+            <div className="mt-3 flex flex-wrap items-center gap-2">
+              <span className="text-[11px] text-muted-foreground">Filter</span>
+              <CommunityMultiSelect
+                options={availableCommunities}
+                selected={communityFilter}
+                onChange={setCommunityFilter}
+              />
+              <Input
+                type="number"
+                value={sqftMin}
+                onChange={(e) => setSqftMin(e.target.value)}
+                placeholder="Min sqft"
+                className="h-8 w-24 bg-input text-xs"
+              />
+              <span className="text-[11px] text-muted-foreground">–</span>
+              <Input
+                type="number"
+                value={sqftMax}
+                onChange={(e) => setSqftMax(e.target.value)}
+                placeholder="Max sqft"
+                className="h-8 w-24 bg-input text-xs"
+              />
+              {(communityFilter.size > 0 || sqftMin.trim() !== "" || sqftMax.trim() !== "") && (
+                <>
+                  <button
+                    onClick={() => {
+                      setCommunityFilter(new Set());
+                      setSqftMin("");
+                      setSqftMax("");
+                    }}
+                    className="flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground"
+                  >
+                    <X className="h-3 w-3" /> Clear filters
+                  </button>
+                  <span className="text-[11px] text-muted-foreground">
+                    {sorted.length} of {results.length} shown
+                  </span>
+                </>
+              )}
+            </div>
+          )}
+
+          {showResults && (
             <div className="mt-4 overflow-x-auto">
               <table className="w-full text-sm">
                 <thead>
                   <tr className="border-b border-border bg-muted/30 text-[11px] uppercase tracking-wide text-muted-foreground">
                     <th className="px-2 py-2 text-left font-medium">Photo</th>
                     <th className="px-2 py-2 text-left font-medium">Listing</th>
-                    <th className="px-2 py-2 text-left font-medium">Price</th>
-                    <th className="px-2 py-2 text-left font-medium">Area</th>
-                    <th className="px-2 py-2 text-left font-medium">AED/sqft</th>
+                    <SortHeader label="Price" col="price" sortKey={sortKey} onSort={setSortKey} />
+                    <SortHeader
+                      label="Area"
+                      col="area_sqft"
+                      sortKey={sortKey}
+                      onSort={setSortKey}
+                    />
+                    <SortHeader
+                      label="AED/sqft"
+                      col="price_per_sqft"
+                      sortKey={sortKey}
+                      onSort={setSortKey}
+                    />
                     <th className="px-2 py-2 text-left font-medium">Beds/Baths</th>
-                    <th className="px-2 py-2 text-left font-medium">Listed</th>
-                    <th className="px-2 py-2 text-left font-medium">Score</th>
+                    <SortHeader
+                      label="Listed"
+                      col="listed_days_ago"
+                      sortKey={sortKey}
+                      onSort={setSortKey}
+                    />
+                    <SortHeader
+                      label="Score"
+                      col="distress_score"
+                      sortKey={sortKey}
+                      onSort={setSortKey}
+                    />
                     <th className="px-2 py-2 text-left font-medium">Contact</th>
                   </tr>
                 </thead>
@@ -697,6 +812,102 @@ function LocationField({ value, onChange }: { value: string; onChange: (v: strin
   );
 }
 
+// Building/community multi-select — options come from `availableCommunities` (distinct values
+// actually present in this job's captured listings, see the useMemo above), never a fabricated
+// static list. Selecting several communities shows listings matching ANY of them (union), not
+// all — the usual "faceted filter" semantics.
+function CommunityMultiSelect({
+  options,
+  selected,
+  onChange,
+}: {
+  options: string[];
+  selected: Set<string>;
+  onChange: (next: Set<string>) => void;
+}) {
+  const [open, setOpen] = useState(false);
+
+  function toggle(value: string) {
+    const next = new Set(selected);
+    if (next.has(value)) next.delete(value);
+    else next.add(value);
+    onChange(next);
+  }
+
+  const label =
+    selected.size === 0
+      ? "Building / community"
+      : selected.size === 1
+        ? Array.from(selected)[0]
+        : `${selected.size} communities`;
+
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          className={`flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] ${
+            selected.size > 0
+              ? "border-primary bg-primary/10 text-primary"
+              : "border-border text-muted-foreground hover:text-foreground"
+          }`}
+        >
+          <MapPin className="h-3 w-3" />
+          <span className="max-w-[160px] truncate">{label}</span>
+        </button>
+      </PopoverTrigger>
+      <PopoverContent className="w-64 p-0" align="start">
+        <Command>
+          <CommandInput placeholder="Search building / community…" className="h-8 text-xs" />
+          <CommandList>
+            <CommandEmpty className="py-4 text-center text-xs text-muted-foreground">
+              No communities captured yet.
+            </CommandEmpty>
+            <CommandGroup>
+              {options.map((opt) => (
+                <CommandItem
+                  key={opt}
+                  onSelect={() => toggle(opt)}
+                  className="flex items-center gap-2 text-xs"
+                >
+                  <Checkbox checked={selected.has(opt)} onCheckedChange={() => toggle(opt)} />
+                  <span className="truncate">{opt}</span>
+                </CommandItem>
+              ))}
+            </CommandGroup>
+          </CommandList>
+        </Command>
+      </PopoverContent>
+    </Popover>
+  );
+}
+
+// Clickable column header — mirrors routes/ecom-crawl.tsx's own SortHeader exactly, so both
+// modules' results tables behave identically. Each column sorts in its own fixed direction (see
+// the `sorted` useMemo's comparator) rather than toggling asc/desc on repeated clicks.
+function SortHeader({
+  label,
+  col,
+  sortKey,
+  onSort,
+}: {
+  label: string;
+  col: SortKey;
+  sortKey: SortKey;
+  onSort: (k: SortKey) => void;
+}) {
+  return (
+    <th className="px-2 py-2 text-left font-medium">
+      <button
+        onClick={() => onSort(col)}
+        className={`uppercase ${sortKey === col ? "text-primary" : "hover:text-foreground"}`}
+      >
+        {label} {sortKey === col ? "↓" : ""}
+      </button>
+    </th>
+  );
+}
+
 function ResultRow({ l, jobId }: { l: PropertyListing; jobId: string }) {
   const shotUrl = propertyImageUrl(jobId, l.source_images[0]);
   const thumb = l.image_urls[0] ?? shotUrl;
@@ -753,6 +964,15 @@ function ResultRow({ l, jobId }: { l: PropertyListing; jobId: string }) {
           <span className="truncate text-[11px] text-muted-foreground">
             {l.community ?? l.location_text ?? "—"}
           </span>
+          {/* Detail-page-only fields (see rule: only populated for the job's top-N scraped
+              listings) — shown only when present, never a placeholder "—" for every other row. */}
+          {(l.age_years !== null || l.average_rent !== null) && (
+            <span className="text-[11px] text-muted-foreground">
+              {l.age_years !== null && `${l.age_years} yr${l.age_years === 1 ? "" : "s"} old`}
+              {l.age_years !== null && l.average_rent !== null && " · "}
+              {l.average_rent !== null && `~AED ${Number(l.average_rent).toLocaleString()}/yr rent`}
+            </span>
+          )}
           {l.distress_keywords.length > 0 && (
             <div className="flex flex-wrap gap-1">
               {l.distress_keywords.slice(0, 2).map((k) => (

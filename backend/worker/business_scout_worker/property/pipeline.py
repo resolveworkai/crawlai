@@ -242,6 +242,8 @@ async def run_property_job(
                 listing.agent_name = cast("str | None", detail.get("agent_name"))
                 listing.phone_number = cast("str | None", detail.get("phone_number"))
                 listing.whatsapp_link = cast("str | None", detail.get("whatsapp_link"))
+                listing.age_years = cast("int | None", detail.get("age_years"))
+                listing.average_rent = cast("float | None", detail.get("average_rent"))
                 detail_images = cast("list[str]", detail.get("image_urls") or [])
                 if detail_images:
                     listing.image_urls = detail_images

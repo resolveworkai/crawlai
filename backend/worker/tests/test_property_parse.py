@@ -69,6 +69,23 @@ def test_parse_bedrooms_studio_takes_priority_over_absent_number() -> None:
     assert field.value == 0
 
 
+# Regression coverage for the 2026-08-22 fix: a real live dubizzle "dubai sports city" run showed
+# ~90% of captured rows with bedrooms=None despite the title spelling it out — the original
+# whitespace-only separator class never matched a HYPHEN between the digit and "Bed"/"bhk".
+
+
+def test_parse_bedrooms_hyphen_separator() -> None:
+    assert parse_bedrooms("Bright 2-Bedroom | High ROI | Upcoming Sports View Residence").value == 2
+
+
+def test_parse_bedrooms_bhk_notation() -> None:
+    assert parse_bedrooms("Brand New Address - Aura Elegance 2-bhk with boulevard view").value == 2
+
+
+def test_parse_bedrooms_bhk_no_hyphen() -> None:
+    assert parse_bedrooms("Spacious 3 BHK apartment").value == 3
+
+
 # --- parse_bathrooms -----------------------------------------------------------------------------
 
 
@@ -176,6 +193,31 @@ def test_guess_title_and_location_single_candidate_used_as_both() -> None:
     title, location = guess_title_and_location(lines)
     assert title == "Beautiful family home in JVC"
     assert location == "Beautiful family home in JVC"
+
+
+# Regression coverage for the 2026-08-22 fix: a real live dubizzle "dubai sports city" run stored
+# the literal string "WhatsApp" as location_text on ~90% of rows — the card's own "Chat on
+# WhatsApp" contact button renders as a standalone text line that passed every other noise check
+# (long enough, alpha-heavy, no price/beds/baths/date match) and won as the LAST candidate.
+
+
+def test_guess_title_and_location_whatsapp_button_excluded() -> None:
+    lines = [
+        "AED 1,080,000",
+        "2 Bed | 2 Baths | 1,419 sqft",
+        "Olympic Park 4, Olympic Park, Dubai Sports City, Dubai",
+        "WhatsApp",
+    ]
+    title, location = guess_title_and_location(lines)
+    assert location == "Olympic Park 4, Olympic Park, Dubai Sports City, Dubai"
+    assert location != "WhatsApp"
+
+
+def test_guess_title_and_location_other_cta_words_excluded() -> None:
+    for cta in ("Call", "Chat", "Message", "Contact", "Share", "Save", "Compare", "Favourite"):
+        lines = ["AED 900,000", "Spacious Family Villa in Arabian Ranches", cta]
+        _title, location = guess_title_and_location(lines)
+        assert location != cta, f"{cta!r} should never win as the location candidate"
 
 
 # --- parse_listing (Stage B/C combiner) ----------------------------------------------------------

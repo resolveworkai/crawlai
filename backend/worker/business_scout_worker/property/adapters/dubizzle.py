@@ -19,6 +19,22 @@ Bathroom filtering is NOT confirmed to have a working server-side URL param on d
 `bedrooms=`/`keywords=` were verified) — capture.py applies a client-side bathroom-count floor as a
 safety net regardless of whether the URL param actually narrows results server-side, so an
 unverified/no-op filter param degrades gracefully rather than silently ignoring the user's filter.
+
+STABLE data-testid SELECTORS (confirmed live 2026-08-22, a real "dubai sports city" 100-listing
+run): both the search-card and detail page are MUI-based and expose per-field `data-testid`
+attributes — a MUCH more reliable extraction path than the innerText-line-heuristic this file
+originally used exclusively. That original heuristic is what caused 3 real bugs found in that same
+live run: bedrooms silently null on ~90% of rows (BEDROOMS_RE never matched a hyphen separator —
+fixed separately in parse_property.py), the literal string "WhatsApp" stored as location_text (the
+card's own WhatsApp CTA button text line won the "last candidate" heuristic — also fixed in
+parse_property.py), and description always empty (the old `[class*="description"]` selector
+matches nothing on the real MUI markup). `extract_card`/`extract_detail` below now read the
+testid-tagged elements DIRECTLY when present, with the regex/heuristic parsers kept ONLY as a
+fallback for whatever a testid selector doesn't find (defense in depth if dubizzle's markup drifts
+— never remove the fallback layer). Confirmed testids used here: card `listing-price`,
+`listing-bedrooms` (2 nodes — count + unit label, `.first` is the count),
+`listing-bathrooms` (same shape), `listing-size`, `category-text`, `listing-location`,
+`offplan-badge`; detail `description`, `Property Age`, `Average Rent`, `Completion Status`.
 """
 
 from __future__ import annotations
@@ -59,6 +75,34 @@ _CARD_SELECTORS: tuple[str, ...] = (
 _LISTING_ID_RE = re.compile(r"-(\d{6,})/?(?:\?.*)?$")
 _BLOCKED_TEXT = ("captcha", "verify you are a human", "access denied", "unusual traffic")
 _PHONE_RE = re.compile(r"\+?971[\s-]?5\d[\s-]?\d{3}[\s-]?\d{4}")
+
+
+async def _testid_text(el: ElementHandle | Page, testid: str) -> str | None:
+    """Reads `[data-testid="<testid>"]`'s own inner text — the stable-selector fast path shared
+    by extract_card (an ElementHandle scoped to one card) and extract_detail (the whole Page).
+    Returns None on no-match rather than raising, so every call site can fall through to its own
+    regex/heuristic fallback (see module docstring)."""
+    node = await el.query_selector(f'[data-testid="{testid}"]')
+    if node is None:
+        return None
+    txt = (await node.inner_text()).strip()
+    return txt or None
+
+
+async def _testid_number(el: ElementHandle | Page, testid: str) -> float | None:
+    """Same as _testid_text, plus extracting the first comma-grouped number in it — for fields
+    like `listing-price` ("939,998") / `listing-size` ("861") that carry no unit text of their
+    own (the unit is a SEPARATE sibling data-testid node, e.g. "sqft")."""
+    txt = await _testid_text(el, testid)
+    if txt is None:
+        return None
+    m = re.search(r"[\d,]+(?:\.\d+)?", txt)
+    if not m:
+        return None
+    try:
+        return float(m.group(0).replace(",", ""))
+    except ValueError:
+        return None
 
 
 class DubizzleAdapter(PlatformAdapter):
@@ -119,7 +163,18 @@ class DubizzleAdapter(PlatformAdapter):
         image_el = await card.query_selector("img")
         image_url = (await image_el.get_attribute("src")) if image_el is not None else None
 
-        title, location_text = pp.guess_title_and_location(lines)
+        # Stable testid selectors first (see module docstring) — query_selector always returns the
+        # FIRST DOM match, and for listing-bedrooms/listing-bathrooms that's confirmed to be the
+        # numeric count node (it precedes the "beds"/"baths" unit-label sibling in real markup).
+        price_val = await _testid_number(card, "listing-price")
+        bedrooms_val = await _testid_number(card, "listing-bedrooms")
+        bathrooms_val = await _testid_number(card, "listing-bathrooms")
+        area_val = await _testid_number(card, "listing-size")
+        location_val = await _testid_text(card, "listing-location")
+        property_type_val = await _testid_text(card, "category-text")
+
+        # Regex/heuristic fallback for whatever a testid selector didn't find.
+        title, heuristic_location = pp.guess_title_and_location(lines)
         price = pp.parse_price(text)
         bedrooms = pp.parse_bedrooms(text)
         bathrooms = pp.parse_bathrooms(text)
@@ -129,12 +184,13 @@ class DubizzleAdapter(PlatformAdapter):
             title=title,
             listing_url=listing_url,
             image_url=image_url,
-            price=price.value,
+            price=price_val if price_val is not None else price.value,
             currency=self.default_currency,
-            area_sqft=area.value,
-            bedrooms=bedrooms.value,
-            bathrooms=bathrooms.value,
-            location_text=location_text,
+            area_sqft=area_val if area_val is not None else area.value,
+            bedrooms=int(bedrooms_val) if bedrooms_val is not None else bedrooms.value,
+            bathrooms=int(bathrooms_val) if bathrooms_val is not None else bathrooms.value,
+            property_type=property_type_val,
+            location_text=location_val or heuristic_location,
             verified=pp.parse_verified(text),
         )
 
@@ -162,15 +218,44 @@ class DubizzleAdapter(PlatformAdapter):
 
         description: str | None = None
         try:
-            read_more = await page.query_selector('button:has-text("Read More")')
-            if read_more is not None:
-                await read_more.click(timeout=2000)
-                await page.wait_for_timeout(300)
-            desc_el = await page.query_selector('[class*="description"], [class*="Description"]')
-            if desc_el is not None:
-                description = (await desc_el.inner_text()).strip() or None
+            # Confirmed live 2026-08-22: [data-testid="description"] already holds the FULL text
+            # in the DOM regardless of the "Read More" button's collapsed/expanded visual state —
+            # clicking it is unnecessary. It's also actively harmful: a stray modal (e.g. a promo
+            # dialog) can intercept the click and abort this whole block via the except below,
+            # losing description extraction for a reason that has nothing to do with the text
+            # actually being there. No click at all now.
+            description = await _testid_text(page, "description")
+            if description is None:
+                # Fallback for whatever the testid doesn't find (see module docstring) — this was
+                # the ONLY selector before 2026-08-22 and matched nothing on the real MUI markup,
+                # which is why description came back empty on every detail-scraped row.
+                desc_el = await page.query_selector(
+                    '[class*="description"], [class*="Description"]'
+                )
+                if desc_el is not None:
+                    description = (await desc_el.inner_text()).strip() or None
         except Exception as exc:  # noqa: BLE001 - description is best-effort
             logger.debug("dubizzle description extraction skipped", error=str(exc))
+
+        age_years: int | None = None
+        try:
+            age_text = await _testid_text(page, "Property Age")
+            if age_text:
+                m = re.search(r"\d+", age_text)
+                if m:
+                    age_years = int(m.group(0))
+        except Exception as exc:  # noqa: BLE001 - not every listing shows an age (e.g. off-plan)
+            logger.debug("dubizzle property-age extraction skipped", error=str(exc))
+
+        average_rent: float | None = None
+        try:
+            rent_text = await _testid_text(page, "Average Rent")
+            if rent_text:
+                m = re.search(r"[\d,]+", rent_text)
+                if m:
+                    average_rent = float(m.group(0).replace(",", ""))
+        except Exception as exc:  # noqa: BLE001 - not every listing/building has a rent estimate
+            logger.debug("dubizzle average-rent extraction skipped", error=str(exc))
 
         image_urls: list[str] = []
         try:
@@ -187,4 +272,10 @@ class DubizzleAdapter(PlatformAdapter):
         except Exception as exc:  # noqa: BLE001 - image gallery is best-effort
             logger.debug("dubizzle image gallery extraction skipped", error=str(exc))
 
-        return DomDetailFields(description=description, phone_number=phone, image_urls=image_urls)
+        return DomDetailFields(
+            description=description,
+            phone_number=phone,
+            image_urls=image_urls,
+            age_years=age_years,
+            average_rent=average_rent,
+        )

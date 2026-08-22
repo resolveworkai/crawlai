@@ -321,7 +321,7 @@ class PropertyCaptureEngine:
         """Visits each of the top-N ranked listings' detail pages, reveals the phone number, and
         builds a WhatsApp deep link. Capped at DETAIL_SCRAPE_HARD_CAP regardless of what's
         requested. Returns {idx: {description, agent_name, phone_number, whatsapp_link,
-        image_urls}}."""
+        image_urls, age_years, average_rent}}."""
         from business_scout_worker.property.whatsapp import build_whatsapp_link
 
         capped = top_listings[:DETAIL_SCRAPE_HARD_CAP]
@@ -357,6 +357,8 @@ class PropertyCaptureEngine:
                             "phone_number": detail.phone_number,
                             "whatsapp_link": whatsapp_link,
                             "image_urls": detail.image_urls,
+                            "age_years": detail.age_years,
+                            "average_rent": detail.average_rent,
                         }
                     except PropertyInterruptedError:
                         raise

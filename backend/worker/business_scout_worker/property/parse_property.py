@@ -20,7 +20,11 @@ from business_scout_worker.property.models import DomListingFields, ParsedListin
 
 # AED/USD/GBP + amount, comma-grouped. Both sites show AED for UAE listings.
 PRICE_RE = re.compile(r"(?:AED|USD|GBP|SAR)\s*\xa0?\s*([\d,]{4,})", re.I)
-BEDROOMS_RE = re.compile(r"\b(\d+)\s*\xa0?\s*(?:Bed\b|BR\b|bedrooms?\b)", re.I)
+# Real captured titles (2026-08-22 live dubizzle run, "dubai sports city") showed a HYPHEN
+# separator ("2-Bedroom", "2-bhk") that the original whitespace-only separator class missed
+# entirely — bedrooms came back null on ~90% of rows despite the title spelling it out plainly.
+# BHK ("Bedroom-Hall-Kitchen") is a real, common notation on Dubai listings alongside "Bed"/"BR".
+BEDROOMS_RE = re.compile(r"\b(\d+)[\s\xa0-]*(?:Bed(?:room)?s?\b|BR\b|BHK\b)", re.I)
 # Studio listings show "Studio" instead of a bedroom count — mapped to 0 bedrooms.
 STUDIO_RE = re.compile(r"\bstudio\b", re.I)
 BATHROOMS_RE = re.compile(r"\b(\d+)\s*\xa0?\s*baths?\b", re.I)
@@ -50,6 +54,26 @@ DISTRESS_KEYWORDS = (
 )
 
 VERIFIED_RE = re.compile(r"\bverified\b", re.I)
+
+# Real captured cards (2026-08-22 live dubizzle run) include a "WhatsApp" contact-button label as
+# its own text line — it passes every other noise check (long enough, alpha-heavy, no price/beds/
+# baths/date match), so it was winning as the "last candidate" and getting stored as the
+# location_text on ~90% of rows instead of the real community string. Any single-word UI/CTA
+# button label goes here, not just WhatsApp — the same class of bug applies to "Call"/"Chat"/etc.
+_UI_ACTION_WORDS = frozenset(
+    {
+        "whatsapp",
+        "call",
+        "chat",
+        "message",
+        "contact",
+        "share",
+        "save",
+        "compare",
+        "favourite",
+        "favorite",
+    }
+)
 
 
 @dataclass
@@ -127,6 +151,8 @@ def guess_title_and_location(lines: list[str]) -> tuple[str | None, str | None]:
         if any(p.search(line) for p in noise):
             continue
         if line.lower() in ("apartment", "villa", "townhouse", "penthouse", "studio"):
+            continue
+        if line.lower() in _UI_ACTION_WORDS:
             continue
         candidates.append(line)
     if not candidates:

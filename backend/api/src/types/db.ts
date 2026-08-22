@@ -439,6 +439,11 @@ export interface PropertyListing {
   phone_number: string | null;
   whatsapp_link: string | null;
   description: string | null;
+  // Detail-page-only, same scope as phone_number above (confirmed live 2026-08-22 — dubizzle's
+  // own "Property Age"/"Average Rent" fields). average_rent is NUMERIC(12,2) — pg returns it as a
+  // string, same convention as price/area_sqft above.
+  age_years: number | null;
+  average_rent: string | null;
   distress_score: number | null;
   extraction_source: PropertyExtractionSource;
   ocr_confidence: number | null;

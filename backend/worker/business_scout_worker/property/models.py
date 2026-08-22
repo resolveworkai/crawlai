@@ -114,6 +114,13 @@ class DomDetailFields(BaseModel):
     agent_name: str | None = None
     phone_number: str | None = None
     image_urls: list[str] = []
+    # Confirmed live 2026-08-22 (dubizzle): the detail page's own "Property Age" (e.g. "15 Years")
+    # and "Average Rent" (e.g. "AED 87,751 Yearly") fields, read via stable data-testid selectors.
+    # Detail-page-only, same scope as phone_number above — never populated for a non-detail-scraped
+    # listing, and never guessed/estimated when the site doesn't show it (e.g. a brand-new/off-plan
+    # listing may have no "Property Age" at all — stays None, not fabricated as 0).
+    age_years: int | None = None
+    average_rent: float | None = None
 
 
 class ParsedListing(BaseModel):
@@ -141,6 +148,9 @@ class ParsedListing(BaseModel):
     phone_number: str | None = None
     whatsapp_link: str | None = None
     description: str | None = None
+    # Detail-page-only (see DomDetailFields) — populated only for detail_scrape_top_n listings.
+    age_years: int | None = None
+    average_rent: float | None = None
     distress_score: float | None = None
     extraction_source: ExtractionSource = "dom"
     ocr_confidence: float | None = None
