@@ -113,15 +113,21 @@ def test_dubizzle_listing_key_stable_across_query_string() -> None:
 
 
 # --- propertyfinder.search_url -------------------------------------------------------------------
+# Rebuilt 2026-08-22 (was returning 0 results — see the adapter module's own docstring for the two
+# confirmed root causes). Real shape: base path is `/en/search` (NOT `/en/search/{purpose}`, which
+# 404s); purpose is `fu=0|1`; location is `l=<id>&t=1`, populated only after resolve_location() has
+# run (search_url() itself never does I/O) — a fresh adapter instance with no location resolved
+# omits `l=`/`t=` entirely (falls back to an unfiltered, whole-UAE search rather than erroring).
 
 
 def test_propertyfinder_search_url_basic_apartment_buy() -> None:
     url = PropertyFinderAdapter().search_url(_filters(), 1)
-    assert url.startswith("https://www.propertyfinder.ae/en/search/buy?")
+    assert url.startswith("https://www.propertyfinder.ae/en/search?")
     assert "c=1" in url  # apartment category code
+    assert "fu=0" in url  # buy
     assert "bf=1" in url
     assert "bt=1" in url
-    assert "q=jvc" in url
+    assert "q=" not in url  # the old, confirmed-broken free-text param must never reappear
 
 
 def test_propertyfinder_search_url_page_2_appends_page_param() -> None:
@@ -131,7 +137,8 @@ def test_propertyfinder_search_url_page_2_appends_page_param() -> None:
 
 def test_propertyfinder_search_url_rent_purpose() -> None:
     url = PropertyFinderAdapter().search_url(_filters(purpose="rent"), 1)
-    assert url.startswith("https://www.propertyfinder.ae/en/search/rent?")
+    assert url.startswith("https://www.propertyfinder.ae/en/search?")
+    assert "fu=1" in url  # rent
 
 
 def test_propertyfinder_search_url_studio_forces_bedrooms_zero() -> None:
@@ -149,6 +156,76 @@ def test_propertyfinder_search_url_no_bedrooms_filter_when_none() -> None:
 def test_propertyfinder_search_url_includes_bathrooms_when_given() -> None:
     url = PropertyFinderAdapter().search_url(_filters(bathrooms=2), 1)
     assert "bathf=2" in url
+
+
+def test_propertyfinder_search_url_no_location_param_before_resolution() -> None:
+    # A freshly-constructed adapter has never had resolve_location() called (e.g. a unit test, or a
+    # resolution that failed) — search_url() must degrade to an unfiltered search, not crash or
+    # silently reintroduce the broken q= param.
+    url = PropertyFinderAdapter().search_url(_filters(), 1)
+    assert "l=" not in url
+    # l= and t= are always appended together in search_url() (see the code) — asserting l='s
+    # absence above already proves t=1 wasn't added either. A bare "t=1" substring check here would
+    # false-positive on "bt=1" (bathroom-to param), which is present in _filters()'s own defaults.
+
+
+class _FakeLocationResponse:
+    def __init__(self, ok: bool, payload: dict[str, object]) -> None:
+        self.ok = ok
+        self._payload = payload
+
+    async def json(self) -> dict[str, object]:
+        return self._payload
+
+
+class _FakeRequestContext:
+    def __init__(self, response: _FakeLocationResponse) -> None:
+        self._response = response
+        self.last_call: dict[str, object] | None = None
+
+    async def get(self, url: str, **kwargs: object) -> _FakeLocationResponse:
+        self.last_call = {"url": url, **kwargs}
+        return self._response
+
+
+class _FakeBrowserContext:
+    def __init__(self, response: _FakeLocationResponse) -> None:
+        self.request = _FakeRequestContext(response)
+
+
+async def test_propertyfinder_resolve_location_sets_l_and_t_params() -> None:
+    adapter = PropertyFinderAdapter()
+    payload: dict[str, object] = {
+        "data": {"attributes": [{"id": 73, "name": "Jumeirah Village Circle"}]}
+    }
+    context = _FakeBrowserContext(_FakeLocationResponse(ok=True, payload=payload))
+    await adapter.resolve_location(context, _filters())  # type: ignore[arg-type]
+    url = adapter.search_url(_filters(), 1)
+    assert "l=73" in url
+    assert "t=1" in url
+
+
+async def test_propertyfinder_resolve_location_no_match_leaves_unfiltered() -> None:
+    adapter = PropertyFinderAdapter()
+    payload: dict[str, object] = {"data": {"attributes": []}}
+    context = _FakeBrowserContext(_FakeLocationResponse(ok=True, payload=payload))
+    await adapter.resolve_location(context, _filters())  # type: ignore[arg-type]
+    url = adapter.search_url(_filters(), 1)
+    assert "l=" not in url
+
+
+async def test_propertyfinder_resolve_location_never_raises_on_failure() -> None:
+    adapter = PropertyFinderAdapter()
+
+    class _RaisingRequestContext:
+        async def get(self, url: str, **kwargs: object) -> _FakeLocationResponse:
+            raise RuntimeError("network error")
+
+    class _RaisingBrowserContext:
+        request = _RaisingRequestContext()
+
+    await adapter.resolve_location(_RaisingBrowserContext(), _filters())  # type: ignore[arg-type]
+    assert adapter._location_id is None  # noqa: SLF001 - asserting internal state is the whole point
 
 
 # --- propertyfinder.listing_key -----------------------------------------------------------------

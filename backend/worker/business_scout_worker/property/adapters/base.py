@@ -69,6 +69,16 @@ class PlatformAdapter(ABC):
         Default no-op — override to set cookies/locale a site needs before its first page load.
         Must never raise."""
 
+    async def resolve_location(self, context: BrowserContext, filters: SearchFilters) -> None:  # noqa: B027 - intentional optional no-op hook, not abstract
+        """Runs ONCE per job, right after on_context_ready — the only place in this contract where
+        building the search URL may need real async I/O (e.g. propertyfinder.ae has no free-text
+        location search param; the real `l=<id>` param requires resolving filters.location to a
+        numeric id via its own location API first — see property/adapters/propertyfinder.py).
+        search_url() itself stays synchronous (called once per page, many times per job) — an
+        adapter that needs this should resolve here and cache the result on self for search_url()
+        to read. Default no-op. Must never raise — a resolution failure should leave the adapter to
+        fall back to whatever search_url() already does without it, not fail the whole job."""
+
     @abstractmethod
     def search_url(self, filters: SearchFilters, page: int) -> str:
         """Builds the search-results URL for `filters` at 1-based `page`."""

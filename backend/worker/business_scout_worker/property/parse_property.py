@@ -31,6 +31,13 @@ BATHROOMS_RE = re.compile(r"\b(\d+)\s*\xa0?\s*baths?\b", re.I)
 AREA_SQFT_RE = re.compile(r"([\d,]{2,})\s*\xa0?\s*(?:sq\s?ft|ft²|sqft)", re.I)
 LISTED_DAYS_AGO_RE = re.compile(r"Listed\s+(\d+)\s+days?\s+ago", re.I)
 LISTED_TODAY_RE = re.compile(r"Listed\s+(?:today|yesterday)", re.I)
+# propertyfinder shows "Listed N weeks/months/years ago" for older listings (confirmed live
+# 2026-08-22 — "Listed 2 months ago"), not just "N days ago" — LISTED_DAYS_AGO_RE alone left every
+# such card's freshness silently None, which also silently understates analysis.py's freshness
+# signal for anything older than ~29 days. Converted to an approximate day count (30/365 per
+# month/year) since the UI only ever shows a rounded unit anyway, not an exact day count.
+LISTED_AGO_UNIT_RE = re.compile(r"Listed\s+(\d+)\s+(day|week|month|year)s?\s+ago", re.I)
+_LISTED_AGO_UNIT_DAYS = {"day": 1, "week": 7, "month": 30, "year": 365}
 
 # Distress-sale language a real buyer would look for — title/description keyword scan feeding
 # analysis.py's distress_score. Deliberately broad (a false-positive keyword match costs nothing;
@@ -122,9 +129,14 @@ def parse_listed_days_ago(text: str) -> _Field:
     if LISTED_TODAY_RE.search(text):
         return _Field(value=0, confidence=85.0)
     m = LISTED_DAYS_AGO_RE.search(text)
-    if not m:
+    if m:
+        return _Field(value=int(m.group(1)), confidence=85.0)
+    m2 = LISTED_AGO_UNIT_RE.search(text)
+    if not m2:
         return _Field()
-    return _Field(value=int(m.group(1)), confidence=85.0)
+    unit_days = _LISTED_AGO_UNIT_DAYS[m2.group(2).lower()]
+    # Approximate (see LISTED_AGO_UNIT_RE's comment) — lower confidence than the exact-days match.
+    return _Field(value=int(m2.group(1)) * unit_days, confidence=60.0)
 
 
 def parse_verified(text: str) -> bool:

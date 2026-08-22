@@ -17,7 +17,8 @@ so the filter is enforced correctly regardless of whether the site's own param w
 
 Ready/off-plan filtering: same story, no confirmed server-side param — `job.property_status`
 defaults to "ready" (the confirmed default preference) and is enforced client-side against each
-card's `is_offplan` flag (dubizzle's real `offplan-badge` testid, confirmed live 2026-08-22).
+card's `is_offplan` flag (dubizzle's real `offplan-badge` testid; propertyfinder's own badge text
+containing "Offplan" — both confirmed live 2026-08-22).
 """
 
 from __future__ import annotations
@@ -183,6 +184,7 @@ class PropertyCaptureEngine:
         async with async_playwright() as p:
             context, cdp_browser = await self._open_context(p)
             await self._adapter.on_context_ready(context)
+            await self._adapter.resolve_location(context, filters)
             page = await context.new_page()
             page.set_default_timeout(self._settings.property_nav_timeout_ms)
             try:
