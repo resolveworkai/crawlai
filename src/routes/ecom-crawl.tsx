@@ -37,6 +37,7 @@ import {
   AlertTriangle,
   ChevronDown,
   Download,
+  Filter,
   ImageOff,
   Loader2,
   RotateCcw,
@@ -45,6 +46,7 @@ import {
   Trash2,
   Trophy,
   Truck,
+  X,
 } from "lucide-react";
 import { toast } from "sonner";
 import type { EcomJobStatus, EcomPlatform, EcomProduct, EcomSortMode } from "@/types/api";
@@ -115,6 +117,40 @@ function num(v: string | number | null): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
+// Numeric ">"/"<" filters applied to the results table client-side (no API round-trip — the full
+// job's rows are already fetched). Same field set as the sortable columns; a row missing the
+// field never passes a filter on it (there's nothing to compare).
+type FilterField = "price" | "rating" | "review_count" | "opportunity_score" | "bought_past_month";
+type FilterOp = "gt" | "lt";
+interface RowFilter {
+  id: string;
+  field: FilterField;
+  op: FilterOp;
+  value: number;
+}
+
+const FILTER_FIELD_OPTIONS: { value: FilterField; label: string }[] = [
+  { value: "price", label: "Price" },
+  { value: "rating", label: "Rating" },
+  { value: "review_count", label: "Reviews" },
+  { value: "bought_past_month", label: "Bought/Sold" },
+  { value: "opportunity_score", label: "Opportunity" },
+];
+
+function filterFieldValue(p: EcomProduct, field: FilterField): number | null {
+  if (field === "price") return num(p.price);
+  if (field === "rating") return p.rating;
+  if (field === "review_count") return p.review_count;
+  if (field === "bought_past_month") return p.bought_past_month;
+  return p.opportunity_score;
+}
+
+function rowPassesFilter(p: EcomProduct, f: RowFilter): boolean {
+  const v = filterFieldValue(p, f.field);
+  if (v === null || v === undefined) return false;
+  return f.op === "gt" ? v > f.value : v < f.value;
+}
+
 function formatMoney(v: string | number | null, currency: string): string {
   const n = num(v);
   return n === null ? "—" : `${currency} ${n.toFixed(2)}`;
@@ -130,6 +166,10 @@ function EcomCrawl() {
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [selectedId, setSelectedId] = useState<string | undefined>(undefined);
   const [sortKey, setSortKey] = useState<SortKey>("idx");
+  const [filters, setFilters] = useState<RowFilter[]>([]);
+  const [filterField, setFilterField] = useState<FilterField>("price");
+  const [filterOp, setFilterOp] = useState<FilterOp>("gt");
+  const [filterValue, setFilterValue] = useState("");
 
   const { data: jobs = [] } = useEcomJobs();
   const runningJob = jobs.find((j) => RUNNING.has(j.status));
@@ -149,8 +189,16 @@ function EcomCrawl() {
   const deleteJob = useDeleteEcomJob();
   const retryJob = useRetryEcomJob();
 
+  const filtered = useMemo(
+    () =>
+      filters.length === 0
+        ? results
+        : results.filter((p) => filters.every((f) => rowPassesFilter(p, f))),
+    [results, filters],
+  );
+
   const sorted = useMemo(() => {
-    const rows = [...results];
+    const rows = [...filtered];
     rows.sort((a, b) => {
       if (sortKey === "idx") return a.idx - b.idx;
       if (sortKey === "price") return (num(b.price) ?? -Infinity) - (num(a.price) ?? -Infinity);
@@ -160,7 +208,29 @@ function EcomCrawl() {
       return (b.opportunity_score ?? -Infinity) - (a.opportunity_score ?? -Infinity);
     });
     return rows;
-  }, [results, sortKey]);
+  }, [filtered, sortKey]);
+
+  function addFilter() {
+    const v = Number(filterValue);
+    if (filterValue.trim() === "" || !Number.isFinite(v)) {
+      toast.error("Enter a numeric filter value");
+      return;
+    }
+    setFilters((prev) => [
+      ...prev,
+      {
+        id: `${filterField}-${filterOp}-${v}-${Date.now()}`,
+        field: filterField,
+        op: filterOp,
+        value: v,
+      },
+    ]);
+    setFilterValue("");
+  }
+
+  function removeFilter(id: string) {
+    setFilters((prev) => prev.filter((f) => f.id !== id));
+  }
 
   function handleLaunch() {
     if (query.trim() === "") {
@@ -438,6 +508,64 @@ function EcomCrawl() {
           </div>
 
           {showResults && analysis && <AnalysisPanel analysis={analysis} />}
+
+          {showResults && (
+            <div className="mt-4 flex flex-wrap items-center gap-2">
+              <Filter className="h-3.5 w-3.5 text-muted-foreground" />
+              <Select value={filterField} onValueChange={(v) => setFilterField(v as FilterField)}>
+                <SelectTrigger className="h-8 w-[130px] bg-input text-xs">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {FILTER_FIELD_OPTIONS.map((opt) => (
+                    <SelectItem key={opt.value} value={opt.value}>
+                      {opt.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <Select value={filterOp} onValueChange={(v) => setFilterOp(v as FilterOp)}>
+                <SelectTrigger className="h-8 w-[110px] bg-input text-xs">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="gt">More than</SelectItem>
+                  <SelectItem value="lt">Less than</SelectItem>
+                </SelectContent>
+              </Select>
+              <Input
+                type="number"
+                value={filterValue}
+                onChange={(e) => setFilterValue(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && addFilter()}
+                placeholder="value"
+                className="h-8 w-24 bg-input text-xs"
+              />
+              <Button size="sm" variant="outline" className="h-8 border-border" onClick={addFilter}>
+                Add filter
+              </Button>
+              {filters.map((f) => (
+                <span
+                  key={f.id}
+                  className="flex items-center gap-1 rounded-full border border-border bg-muted/40 px-2.5 py-1 text-[11px]"
+                >
+                  {FILTER_FIELD_OPTIONS.find((o) => o.value === f.field)?.label}{" "}
+                  {f.op === "gt" ? ">" : "<"} {f.value}
+                  <button
+                    onClick={() => removeFilter(f.id)}
+                    className="text-muted-foreground hover:text-foreground"
+                  >
+                    <X className="h-3 w-3" />
+                  </button>
+                </span>
+              ))}
+              {filters.length > 0 && (
+                <span className="text-[11px] text-muted-foreground">
+                  {sorted.length} of {results.length} shown
+                </span>
+              )}
+            </div>
+          )}
 
           {showResults && (
             <div className="mt-4 overflow-x-auto">
