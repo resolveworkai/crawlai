@@ -204,8 +204,17 @@ class EcomCaptureEngine:
 
                         dom = await self._adapter.extract_card(card)
                         href = dom.product_url
-                        key = self._adapter.product_key(href) or href or dom.title
-                        if key is None or key in seen:
+                        key = self._adapter.product_key(href)
+                        if key is None:
+                            # Not a real product — a promo/deal/ad tile sharing the card CSS class
+                            # with no genuine product SKU in its href (confirmed 2026-08-22:
+                            # AliExpress's "Deals & discounts" banner tile matches
+                            # search-item-card-wrapper but has no /item/ link). Every adapter's
+                            # product_key() is the authoritative "is this a real product" check —
+                            # falling back to a raw href/title here used to let such non-product
+                            # chrome through as a fake row with garbage/empty data.
+                            continue
+                        if key in seen:
                             continue
                         seen.add(key)
                         new_count += 1
@@ -218,7 +227,7 @@ class EcomCaptureEngine:
                         images: list[str] = []
                         try:
                             rel = f"raw/{idx:03d}_{_slug(title)}.png"
-                            await card.screenshot(path=str(self._job_dir / rel))
+                            await self._screenshot_card(card, str(self._job_dir / rel))
                             images.append(rel)
                         except Exception as exc:  # noqa: BLE001 - screenshot is best-effort
                             logger.info("card screenshot failed", title=title, error=str(exc))
@@ -310,6 +319,30 @@ class EcomCaptureEngine:
             logger.warning("goto hit a download trap, retrying once", url=url, error=str(exc))
             await page.wait_for_timeout(1500)
             await page.goto(url, wait_until="domcontentloaded")
+
+    async def _screenshot_card(self, card: ElementHandle, path: str) -> None:
+        """`ElementHandle.screenshot()` waits for the element to be visually "stable" (no ongoing
+        layout shift) before capturing — on AliExpress's grid (shimmer/loading placeholders,
+        rotating promo badges, progressively-loading images) that check sometimes never converges
+        within the default window, throwing "Timeout ... waiting for element to be stable"
+        (confirmed 2026-08-22 — several cards failed this way, and since AliExpress is pure-OCR
+        with no DOM fallback, a failed screenshot there means a totally empty row, not just a
+        missing field). `animations="disabled"` freezes CSS animations/transitions for the shot,
+        which is Playwright's documented fix for exactly this instability. Explicit
+        scroll-into-view + a short settle wait first reduces the chance of a shift starting mid-
+        capture; one retry covers a one-off race, a second failure propagates to the caller's
+        existing best-effort catch (screenshot stays best-effort, not required)."""
+        try:
+            await card.scroll_into_view_if_needed(timeout=5000)
+        except Exception as exc:  # noqa: BLE001 - scroll is a best-effort stability aid
+            logger.debug("card scroll-into-view skipped", error=str(exc))
+        await humanize.dwell(150, 250)
+        try:
+            await card.screenshot(path=path, animations="disabled", timeout=20000)
+        except Exception as exc:
+            logger.debug("card screenshot retrying once", error=str(exc))
+            await humanize.dwell(400, 600)
+            await card.screenshot(path=path, animations="disabled", timeout=20000)
 
     async def _wait_for_cards(self, page: Page) -> None:
         """Bounded wait for the FIRST product card to appear before we check is_blocked/count
