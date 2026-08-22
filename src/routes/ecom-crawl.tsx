@@ -97,6 +97,16 @@ const SORT_OPTIONS: { value: EcomSortMode; label: string }[] = [
   { value: "relevance", label: "Relevance" },
 ];
 
+// AliExpress has no rating sort — its adapter maps rating_desc to orders (total_tranpro_desc,
+// "orders" sort) instead. Same underlying sortMode value, platform-specific label only, so the
+// dropdown doesn't claim a "rating" sort that doesn't exist there.
+function sortOptionsFor(platform: EcomPlatform): { value: EcomSortMode; label: string }[] {
+  if (platform !== "aliexpress") return SORT_OPTIONS;
+  return SORT_OPTIONS.map((opt) =>
+    opt.value === "rating_desc" ? { ...opt, label: "Orders / sold (high → low)" } : opt,
+  );
+}
+
 type SortKey = "idx" | "price" | "rating" | "review_count" | "opportunity_score";
 
 function num(v: string | number | null): number | null {
@@ -231,7 +241,7 @@ function EcomCrawl() {
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                {SORT_OPTIONS.map((opt) => (
+                {sortOptionsFor(platform).map((opt) => (
                   <SelectItem key={opt.value} value={opt.value}>
                     {opt.label}
                   </SelectItem>
