@@ -386,6 +386,42 @@ on this status for a deploy decision.
   `start-noon-host.bat`'s own comment), which is a resource-sharing convenience, not a coupling.
   Real remaining gap, NOT this session's scope: noon and aliexpress still serialize against each
   other (same CDP-group lock) — only worth revisiting if aliexpress sees real usage.
+- **Host-runner reliability — self-heal + heartbeat (2026-08-23, `chrome_health.py`)**: both host
+  runners attach to the SAME physical operator Chrome window, so Chrome dying previously took
+  every CDP-required platform down SILENTLY — a job just failed with an ECONNREFUSED
+  `error_message` and nothing else happened until a human noticed and manually re-ran the launcher
+  .bat. Shared (infra-level, not business logic — same tier as `logging_config.py`/`settings.py`)
+  `chrome_health.py` gives both `run_property_host.py` and `run_noon_host.py`:
+  - `ensure_chrome_running()` — checked BEFORE claiming any job, every poll cycle. If CDP is
+    unreachable, best-effort relaunches Chrome with the exact `--remote-debugging-port`/
+    `--user-data-dir` flags `scripts/start-*-host.bat` use (same profile, so it attaches to
+    whatever's already there rather than creating a second conflicting one), with a jittered
+    delay + re-check first so the common case is only ONE of the two runners actually launches it
+    when both notice the outage at the same moment. If unreachable, the whole poll cycle is
+    skipped (no jobs claimed) — claiming a job then having it immediately fail would burn a real
+    attempt (and, for a job, its retry count) over what's often a momentary Chrome closure.
+  - `write_heartbeat()` — a `host_runner_status` row (migration `1785900000000`) UPSERTed every
+    poll cycle regardless of whether there was work to do, so a STALE heartbeat means the process
+    itself died, while a fresh heartbeat with `cdp_reachable=false` means the process is alive but
+    Chrome is down — distinguishable failure modes. `GET /system/runner-status` (Node) + a shared
+    `RunnerStatusBanner` component (property-crawl.tsx shows `property`, ecom-crawl.tsx shows
+    `noon` — amazon needs no runner heartbeat, it's container-run) surface this as an in-app
+    warning banner instead of a silently stuck queue.
+  - **Verified live, end-to-end, the hard way**: killed the real debug Chrome process mid-session
+    to test this — both runners detected the outage within one poll cycle, one of them (via the
+    jitter/recheck race) actually relaunched it, and both fully recovered within ~15s with zero
+    manual intervention, confirmed via `host_runner_status` heartbeats flipping back to
+    `cdp_reachable=true`. **⚠️ Real mistake made while doing this test**: used
+    `taskkill /F /IM chrome.exe`, which kills EVERY Chrome process system-wide, not just the debug
+    instance — this also closed the operator's own regular browser windows/tabs. **Never do this
+    again** — target only the debug profile's specific PID(s) (e.g. via `wmic process where
+    "name='chrome.exe' and commandline like '%remote-debugging-port%'"`), never a blanket
+    `taskkill /IM chrome.exe`.
+  - `backend/api/src/__tests__/health.test.ts`'s per-test timeout was bumped 5s → 15s in the same
+    pass (unrelated to this feature, found while running the full suite) — this test re-imports
+    the whole app fresh on every case, and that import graph has grown enough across this
+    project's life that it started genuinely exceeding vitest's 5s default under full-suite load.
+    Not a race to chase; if it flakes again, the app has grown further and the fix is the same.
 - **Known follow-up, not yet done**: `supabase/` (CLI config + old Lovable-era migrations) is dead
   weight left over from the original scaffold — the real schema is `db/migrations/*.sql` via
   node-pg-migrate. Safe to delete, just hasn't been done. Prod deployment target (which host, TLS

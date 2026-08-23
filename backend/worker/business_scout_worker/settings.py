@@ -95,6 +95,22 @@ class Settings(BaseSettings):
     property_device_scale: int = Field(default=2, ge=1, le=4)
     property_cdp_url: str | None = None
 
+    # Host-runner reliability (2026-08-23, chrome_health.py) — both property and noon/aliexpress
+    # host runners attach to the SAME physical operator Chrome window on the same CDP port (by
+    # design), so Chrome dying takes down every CDP-required platform at once, silently, until a
+    # human notices a job failed and manually re-runs the .bat file. These settings let each host
+    # runner self-heal (best-effort auto-relaunch) and report a heartbeat the API/UI can surface.
+    chrome_exe_path: str | None = None
+    """Override for chrome.exe's location. None => auto-detect the two standard Program Files
+    paths (matches scripts/start-*-host.bat's own fallback logic)."""
+    chrome_user_data_dir: str | None = None
+    """Override for the debug-Chrome profile dir. None => %TEMP%\\noon-cdp-chrome (matches every
+    scripts/start-*-host.bat exactly, so an auto-restart attaches to the SAME profile rather than
+    creating a second, conflicting one)."""
+    chrome_auto_restart: bool = True
+    """Best-effort self-heal — set false to only detect/report the outage, never attempt to
+    relaunch Chrome (e.g. if the operator wants to control that manually)."""
+
 
 def load_settings() -> Settings:
     return Settings()

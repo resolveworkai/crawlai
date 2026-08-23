@@ -15,36 +15,57 @@ describe("GET /health", () => {
     vi.resetModules();
   });
 
-  it("returns 200 when the database is reachable", async () => {
-    const db = await import("../db/pool.js");
-    vi.mocked(db.pingDatabase).mockResolvedValue(true);
-    const { createApp } = await import("../app.js");
+  // 15s (up from vitest's 5s default, 2026-08-23) — this test re-imports the WHOLE app fresh
+  // (vi.resetModules() + await import("../app.js")) on every case, and that app's own import
+  // graph has grown a lot across this project's life (every new router/db module adds to it).
+  // Under a full `vitest run` (18 files transforming/importing concurrently), this legitimately
+  // started exceeding 5s and flaking — not a real bug, just a stale timeout for how big the app
+  // has gotten. If this starts flaking again at 15s, the app's import graph has grown further and
+  // the fix is the same: raise it again, don't chase a phantom race.
+  const IMPORT_HEAVY_TIMEOUT_MS = 15_000;
 
-    const res = await request(createApp()).get("/health");
+  it(
+    "returns 200 when the database is reachable",
+    async () => {
+      const db = await import("../db/pool.js");
+      vi.mocked(db.pingDatabase).mockResolvedValue(true);
+      const { createApp } = await import("../app.js");
 
-    expect(res.status).toBe(200);
-    expect(res.body).toEqual({ status: "ok", service: "business-scout-ai-backend-api" });
-  });
+      const res = await request(createApp()).get("/health");
 
-  it("returns 503 when the database is unreachable", async () => {
-    const db = await import("../db/pool.js");
-    vi.mocked(db.pingDatabase).mockResolvedValue(false);
-    const { createApp } = await import("../app.js");
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual({ status: "ok", service: "business-scout-ai-backend-api" });
+    },
+    IMPORT_HEAVY_TIMEOUT_MS,
+  );
 
-    const res = await request(createApp()).get("/health");
+  it(
+    "returns 503 when the database is unreachable",
+    async () => {
+      const db = await import("../db/pool.js");
+      vi.mocked(db.pingDatabase).mockResolvedValue(false);
+      const { createApp } = await import("../app.js");
 
-    expect(res.status).toBe(503);
-    expect(res.body.error.code).toBe("SERVICE_UNAVAILABLE");
-  });
+      const res = await request(createApp()).get("/health");
 
-  it("returns a structured 404 for unknown routes", async () => {
-    const db = await import("../db/pool.js");
-    vi.mocked(db.pingDatabase).mockResolvedValue(true);
-    const { createApp } = await import("../app.js");
+      expect(res.status).toBe(503);
+      expect(res.body.error.code).toBe("SERVICE_UNAVAILABLE");
+    },
+    IMPORT_HEAVY_TIMEOUT_MS,
+  );
 
-    const res = await request(createApp()).get("/does-not-exist");
+  it(
+    "returns a structured 404 for unknown routes",
+    async () => {
+      const db = await import("../db/pool.js");
+      vi.mocked(db.pingDatabase).mockResolvedValue(true);
+      const { createApp } = await import("../app.js");
 
-    expect(res.status).toBe(404);
-    expect(res.body.error.code).toBe("NOT_FOUND");
-  });
+      const res = await request(createApp()).get("/does-not-exist");
+
+      expect(res.status).toBe(404);
+      expect(res.body.error.code).toBe("NOT_FOUND");
+    },
+    IMPORT_HEAVY_TIMEOUT_MS,
+  );
 });

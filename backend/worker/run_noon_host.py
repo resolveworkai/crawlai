@@ -44,6 +44,7 @@ from typing import Any
 import psycopg
 from psycopg.rows import dict_row
 
+from business_scout_worker.chrome_health import ensure_chrome_running, write_heartbeat
 from business_scout_worker.ecom import jobs as ecom_jobs
 from business_scout_worker.ecom import pipeline as ecom_pipeline
 from business_scout_worker.ecom.adapters import cdp_required_platforms
@@ -146,6 +147,28 @@ async def _run() -> int:
     await pool.open()
     claimed = 0
     try:
+        # Health-check + best-effort self-heal BEFORE claiming anything (2026-08-23,
+        # chrome_health.py) — same reasoning as run_property_host.py's own version: claiming a job
+        # then having it fail with ECONNREFUSED burns a real attempt over what's often a momentary
+        # Chrome closure, and the heartbeat is what lets the API/UI show "runner not responding".
+        chrome_ok = await ensure_chrome_running(
+            cdp_url=settings.ecom_cdp_url,
+            launch_url="https://www.noon.com/uae-en/",
+            runner_name="noon",
+            chrome_exe_override=settings.chrome_exe_path,
+            user_data_dir_override=settings.chrome_user_data_dir,
+            auto_restart=settings.chrome_auto_restart,
+        )
+        await write_heartbeat(
+            pool,
+            "noon",
+            cdp_reachable=chrome_ok,
+            last_error=None if chrome_ok else "Chrome/CDP unreachable at last poll",
+        )
+        if not chrome_ok:
+            logger.warning("skipping this poll cycle — chrome/CDP unreachable")
+            return 0
+
         # Recover ONLY our own kind (CDP platforms) — a prior host run that crashed mid-capture
         # leaves a noon job stuck 'capturing' that nothing else will ever clean up (the container
         # deliberately never touches noon). Never recover non-CDP jobs — the container may be

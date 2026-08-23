@@ -36,6 +36,7 @@ import {
 } from "@/components/ui/command";
 import { Checkbox } from "@/components/ui/checkbox";
 import { RequireAuth } from "@/components/require-auth";
+import { RunnerStatusBanner } from "@/components/runner-status-banner";
 import {
   propertyExportUrl,
   propertyImageUrl,
@@ -398,6 +399,7 @@ function PropertyCrawl() {
       title="Property Research"
       subtitle="Search dubizzle/propertyfinder for a location + bedroom/bathroom filter, capture every listing, and rank the top deals by price-per-sqft, distress-sale language, freshness, and verification — best value for money first."
     >
+      <RunnerStatusBanner runnerNames={["property"]} />
       <Card className="border-border bg-card p-5">
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
           <div>

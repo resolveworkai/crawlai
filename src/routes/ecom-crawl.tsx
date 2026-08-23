@@ -21,6 +21,7 @@ import {
 } from "@/components/ui/select";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { RequireAuth } from "@/components/require-auth";
+import { RunnerStatusBanner } from "@/components/runner-status-banner";
 import {
   ecomExportUrl,
   ecomImageUrl,
@@ -263,8 +264,9 @@ function EcomCrawl() {
   return (
     <AppShell
       title="Product Research"
-      subtitle="Search a marketplace's results pages, capture pricing/ratings/badges, then score each product's market opportunity. Runs one job at a time."
+      subtitle="Search a marketplace's results pages, capture pricing/ratings/badges, then score each product's market opportunity. Amazon and noon/AliExpress run independently (concurrently); two jobs on the same platform still queue behind each other."
     >
+      <RunnerStatusBanner runnerNames={["noon"]} />
       <Card className="border-border bg-card p-5">
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
           <div>

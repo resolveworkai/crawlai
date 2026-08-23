@@ -21,6 +21,7 @@ import { ocrCrawlRouter } from "./routes/ocrCrawl.js";
 import { ecomCrawlRouter } from "./routes/ecomCrawl.js";
 import { propertyCrawlRouter } from "./routes/propertyCrawl.js";
 import { marketingRouter } from "./routes/marketing.js";
+import { runnerStatusRouter } from "./routes/runnerStatus.js";
 
 // App assembly only — no listen() here (see server.ts). Keeping the two apart lets tests
 // import the app directly (supertest) without binding a real port.
@@ -48,6 +49,7 @@ export function createApp(): Express {
   app.use(ecomCrawlRouter);
   app.use(propertyCrawlRouter);
   app.use(marketingRouter);
+  app.use(runnerStatusRouter);
 
   app.use(notFoundHandler);
   app.use(errorHandler);

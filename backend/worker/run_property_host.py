@@ -40,6 +40,7 @@ from typing import Any
 import psycopg
 from psycopg.rows import dict_row
 
+from business_scout_worker.chrome_health import ensure_chrome_running, write_heartbeat
 from business_scout_worker.logging_config import get_logger
 from business_scout_worker.property import jobs as property_jobs
 from business_scout_worker.property import pipeline as property_pipeline
@@ -157,6 +158,30 @@ async def _run() -> int:
     await pool.open()
     claimed = 0
     try:
+        # Health-check + best-effort self-heal BEFORE claiming anything (2026-08-23,
+        # chrome_health.py) — claiming a job then having it immediately fail with ECONNREFUSED
+        # burns a real attempt (and, for a job, its retry count) over what's often just Chrome
+        # having been closed for a moment. Checking first means a transient outage costs nothing
+        # more than one poll cycle's delay, and the heartbeat written either way is what lets the
+        # API/UI show "runner not responding" instead of a silently stuck queue.
+        chrome_ok = await ensure_chrome_running(
+            cdp_url=settings.property_cdp_url,
+            launch_url="https://dubai.dubizzle.com/en/property-for-sale/residential/apartment/",
+            runner_name="property",
+            chrome_exe_override=settings.chrome_exe_path,
+            user_data_dir_override=settings.chrome_user_data_dir,
+            auto_restart=settings.chrome_auto_restart,
+        )
+        await write_heartbeat(
+            pool,
+            "property",
+            cdp_reachable=chrome_ok,
+            last_error=None if chrome_ok else "Chrome/CDP unreachable at last poll",
+        )
+        if not chrome_ok:
+            logger.warning("skipping this poll cycle — chrome/CDP unreachable")
+            return 0
+
         recovered = await property_jobs.recover_orphaned_property_jobs(pool)
         if recovered:
             logger.info("recovered orphaned property jobs", count=recovered)
