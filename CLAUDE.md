@@ -457,6 +457,32 @@ on this status for a deploy decision.
     countdown/last-fired time, with a `Switch` to pause/resume (`enabled=false` just stops it from
     ever being selected as due; toggling back to `true` sets `next_run_at = now()` so it fires on the
     very next 5-minute tick rather than waiting out its original interval) and a delete button.
+- **Cross-platform dedup — "also on {platform}" badge (2026-08-23, `possible_duplicate`)**: dubizzle
+  and propertyfinder listings for the SAME physical unit have no shared external ID across the two
+  sites, so a captured listing has no way to know it's a duplicate of one already seen on the other
+  platform — every unit could be scored, wishlisted, and messaged as if it were two independent
+  deals. `propertyListings.ts`'s `listPropertyListingsWithHistory` (already the single query behind
+  `/results`, same place `previous_price`/`price_dropped` are computed) gained a THIRD correlated
+  subquery, `possible_duplicate`: for each listing, look for a candidate on the OTHER platform with
+  the same purpose (buy vs rent never cross-matches) + same community (case-insensitive exact — the
+  strongest signal available) + same bedroom count (both sides must have a known value — an
+  unknown-bedroom listing never participates) + same bathroom count IF both sides have one recorded
+  (skipped, not required, when either is missing) + price within 8% (or AED 5,000, whichever is
+  larger) + area within 6% IF both sides have an area recorded. This is a HEURISTIC, not a certain
+  match — the UI badge says "possible" everywhere, never asserts identity. Runs live on every read
+  (not precomputed/stored) so it can never go stale as new jobs capture new data on the other
+  platform.
+  - **Frontend**: a small warning-colored "also on {platform}" badge next to the existing verified/
+    review/off-plan/price-drop badges on each row (`ResultRow` in `property-crawl.tsx`), linking
+    straight to the matched listing on the other site; hover shows the matched title/price so the
+    match is inspectable, not a black box.
+  - **Live-verified end-to-end**: inserted two real rows into `property_listings` (one on an
+    existing dubizzle job, one on an existing propertyfinder job, both for "liwan") with matching
+    community/bedrooms/bathrooms and price/area inside tolerance — confirmed the match resolves in
+    BOTH directions (each row correctly points back at the other) via `GET .../results`, then
+    confirmed against a real 129-listing job (JVC, no propertyfinder counterpart job existed for
+    that area in this DB) that zero false positives were flagged. Test rows removed after
+    verification — this was DB state, not app logic, so no migration/rollback needed.
 - **Known follow-up, not yet done**: `supabase/` (CLI config + old Lovable-era migrations) is dead
   weight left over from the original scaffold — the real schema is `db/migrations/*.sql` via
   node-pg-migrate. Safe to delete, just hasn't been done. Prod deployment target (which host, TLS

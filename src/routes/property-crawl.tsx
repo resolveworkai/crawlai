@@ -1261,6 +1261,17 @@ function ResultRow({
                 <TrendingDown className="h-2.5 w-2.5" /> price drop
               </span>
             )}
+            {l.possible_duplicate && (
+              <a
+                href={l.possible_duplicate.listingUrl ?? undefined}
+                target={l.possible_duplicate.listingUrl ? "_blank" : undefined}
+                rel={l.possible_duplicate.listingUrl ? "noreferrer" : undefined}
+                title={`Likely the same unit on ${l.possible_duplicate.platform}: "${l.possible_duplicate.title}" (${formatMoney(l.possible_duplicate.price, l.currency)}) — same community/beds/baths, close price+area`}
+                className="flex shrink-0 items-center gap-0.5 rounded bg-warning/20 px-1 text-[9px] uppercase text-warning hover:underline"
+              >
+                <GitCompare className="h-2.5 w-2.5" /> also on {l.possible_duplicate.platform}
+              </a>
+            )}
             <button
               onClick={() => {
                 if (wishlisted) return;

@@ -543,10 +543,21 @@ export interface PropertyListingRefresh {
 // at in an EARLIER job's capture (any day) — the cross-job/day price-drop signal (see
 // db/propertyListings.ts's listPropertyListingsWithPriceHistory). Distinct from
 // PropertyListingRefresh above, which is the same signal but for a manual, single-row refresh.
+// A candidate same-unit listing captured on the OTHER platform (see propertyListings.ts's
+// listPropertyListingsWithHistory for the matching heuristic) — a heuristic match, not a
+// site-verified identity, so surfaced as "possible" everywhere it's shown.
+export interface PropertyPossibleDuplicate {
+  platform: PropertyPlatform;
+  listingUrl: string | null;
+  title: string;
+  price: string | null;
+}
+
 export interface PropertyListingWithHistory extends PropertyListing {
   previous_price: string | null;
   price_dropped: boolean;
   latest_refresh: PropertyListingRefresh | null;
+  possible_duplicate: PropertyPossibleDuplicate | null;
 }
 
 // --- Marketing / Messaging (see md/MARKETING.md + db/migrations/*marketing.sql) ---

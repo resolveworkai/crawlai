@@ -5,6 +5,7 @@ import type {
   PropertyListingRefresh,
   PropertyListingWithHistory,
   PropertyPlatform,
+  PropertyPossibleDuplicate,
 } from "../types/db.js";
 
 // Ranked by distress_score (best deal first) rather than idx (capture order) — this is the
@@ -24,11 +25,35 @@ export async function listPropertyListings(jobId: string): Promise<PropertyListi
 // EARLIER job, if any; `price_dropped` is true when the current price is strictly lower than that.
 // Also carries the most recent COMPLETED manual refresh for the row (see propertyListingRefreshes.ts)
 // so a just-refreshed row can be highlighted the same way without a second round-trip.
+//
+// `possible_duplicate` — cross-platform dedup (2026-08-23): flags a listing that LIKELY represents
+// the same physical unit already captured on the OTHER platform (dubizzle vs propertyfinder), so
+// the same unit isn't scored/messaged/compared as two independent deals. No shared external ID
+// exists across the two sites, so this is a HEURISTIC match, never an exact one — surfaced in the
+// UI as "possible", never asserted as certain. Matching signals, all required together:
+//   - different platform, same purpose (buy vs rent never cross-matches)
+//   - same community (case-insensitive exact — the strongest single signal available)
+//   - same bedroom count (both sides must have a known value — an unknown-bedroom listing never
+//     participates in dedup at all, since "unknown" isn't a safe basis for a match)
+//   - same bathroom count IF both sides have one recorded (skipped, not required, when either is
+//     missing — bathroom count is inconsistently captured across listings)
+//   - price within 8% of each other (or AED 5,000, whichever is larger — a flat percentage alone
+//     would be too tight at low price points and too loose at high ones)
+//   - area within 6% of each other IF both sides have an area recorded (skipped when either is
+//     missing, same reasoning as bathrooms)
+// When multiple candidates satisfy all of the above, the closest by price wins. This intentionally
+// runs on every read (correlated subquery, same style as previous_price above) rather than being
+// precomputed/stored — a listing's "possible duplicate" can change as new jobs capture new data on
+// the other platform, and re-deriving it live means it's never stale.
 export async function listPropertyListingsWithHistory(
   jobId: string,
 ): Promise<PropertyListingWithHistory[]> {
   const { rows } = await pool.query<
-    PropertyListing & { previous_price: string | null; latest_refresh: PropertyListingRefresh | null }
+    PropertyListing & {
+      previous_price: string | null;
+      latest_refresh: PropertyListingRefresh | null;
+      possible_duplicate: PropertyPossibleDuplicate | null;
+    }
   >(
     `SELECT pl.*,
        (
@@ -46,14 +71,39 @@ export async function listPropertyListingsWithHistory(
            ORDER BY plr.completed_at DESC
            LIMIT 1
          ) r
-       ) AS latest_refresh
+       ) AS latest_refresh,
+       (
+         SELECT jsonb_build_object(
+           'platform', cand_job.platform,
+           'listingUrl', cand.listing_url,
+           'title', cand.title,
+           'price', cand.price
+         )
+         FROM property_listings cand
+         JOIN property_jobs cand_job ON cand_job.id = cand.job_id
+         WHERE cand_job.platform <> cur_job.platform
+           AND cand_job.purpose = cur_job.purpose
+           AND cand.community IS NOT NULL AND pl.community IS NOT NULL
+           AND lower(cand.community) = lower(pl.community)
+           AND pl.bedrooms IS NOT NULL AND cand.bedrooms = pl.bedrooms
+           AND (pl.bathrooms IS NULL OR cand.bathrooms IS NULL OR cand.bathrooms = pl.bathrooms)
+           AND pl.price IS NOT NULL AND cand.price IS NOT NULL
+           AND ABS(cand.price - pl.price) <= GREATEST(pl.price * 0.08, 5000)
+           AND (
+             pl.area_sqft IS NULL OR cand.area_sqft IS NULL
+             OR ABS(cand.area_sqft - pl.area_sqft) <= GREATEST(pl.area_sqft * 0.06, 50)
+           )
+         ORDER BY ABS(cand.price - pl.price) ASC
+         LIMIT 1
+       ) AS possible_duplicate
      FROM property_listings pl
+     JOIN property_jobs cur_job ON cur_job.id = pl.job_id
      WHERE pl.job_id = $1
      ORDER BY pl.distress_score DESC NULLS LAST, pl.idx ASC`,
     [jobId],
   );
   return rows.map((row) => {
-    const { previous_price, latest_refresh, ...listing } = row;
+    const { previous_price, latest_refresh, possible_duplicate, ...listing } = row;
     const currentPrice = listing.price === null ? null : Number(listing.price);
     const priorPrice = previous_price === null ? null : Number(previous_price);
     const refreshDropped =
@@ -72,6 +122,7 @@ export async function listPropertyListingsWithHistory(
       previous_price,
       price_dropped: priceDropped,
       latest_refresh,
+      possible_duplicate,
     };
   });
 }

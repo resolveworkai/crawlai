@@ -514,13 +514,24 @@ export interface PropertyJobSchedule {
   created_at: string;
 }
 
-// PropertyListing enriched with the cross-job/day price-drop signal (previous_price/price_dropped)
-// plus the most recent completed manual refresh, if any — see backend/api/src/db/
-// propertyListings.ts's listPropertyListingsWithHistory, which is what /results now returns.
+// Mirrors backend/api/src/types/db.ts's PropertyPossibleDuplicate — a heuristic cross-platform
+// same-unit match (community + bedrooms/bathrooms + price/area tolerance), never a certain one.
+export interface PropertyPossibleDuplicate {
+  platform: PropertyPlatform;
+  listingUrl: string | null;
+  title: string;
+  price: string | null;
+}
+
+// PropertyListing enriched with the cross-job/day price-drop signal (previous_price/price_dropped),
+// the most recent completed manual refresh (if any), and a possible cross-platform duplicate (if
+// any) — see backend/api/src/db/propertyListings.ts's listPropertyListingsWithHistory, which is
+// what /results now returns.
 export interface PropertyListingWithHistory extends PropertyListing {
   previous_price: string | null;
   price_dropped: boolean;
   latest_refresh: PropertyListingRefresh | null;
+  possible_duplicate: PropertyPossibleDuplicate | null;
 }
 
 export interface PropertyAnalysisSummary {
