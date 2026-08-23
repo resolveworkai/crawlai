@@ -195,6 +195,11 @@ class ParsedListing(BaseModel):
     average_rent: float | None = None
     listed_date: str | None = None
     distress_score: float | None = None
+    # How much of distress_score is backed by real data vs. a neutral fallback (analysis.py's
+    # compute_distress_confidence) — 2026-08-23. Set alongside distress_score at every scoring
+    # pass (Stage C, and again post-detail-scrape); never fabricated for a listing that hasn't
+    # been scored yet.
+    distress_confidence: float | None = None
     extraction_source: ExtractionSource = "dom"
     ocr_confidence: float | None = None
     needs_review: bool = False

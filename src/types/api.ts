@@ -433,6 +433,9 @@ export interface PropertyListing {
   // parsed into a date.
   listed_date: string | null;
   distress_score: number | null;
+  // How much of distress_score is backed by real data vs. a neutral fallback — 0-100. See
+  // backend property/analysis.py's compute_distress_confidence.
+  distress_confidence: number | null;
   extraction_source: PropertyExtractionSource;
   ocr_confidence: number | null;
   needs_review: boolean;

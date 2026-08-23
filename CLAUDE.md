@@ -483,6 +483,48 @@ on this status for a deploy decision.
     confirmed against a real 129-listing job (JVC, no propertyfinder counterpart job existed for
     that area in this DB) that zero false positives were flagged. Test rows removed after
     verification — this was DB state, not app logic, so no migration/rollback needed.
+- **Distress-score accuracy + confidence + rental yield + "Rented for" column (2026-08-23)**: a
+  direct ask ("is there an existing Python API for this kind of scoring with a confidence score")
+  was investigated and answered honestly in `analysis.py`'s own docstring — no, multi-parameter
+  real-estate deal scoring with a genuine confidence figure isn't something scikit-learn/
+  statsmodels/etc. gives you off the shelf; that needs LABELED ground truth ("this listing really
+  was underpriced by X%") this pipeline has no source for. What's buildable and genuinely improves
+  accuracy without one:
+  - **New `yield` component** (default weight 0.20, `analysis.py`) — rental yield
+    (average_rent/price) PERCENTILE RANK among whichever listings in the batch have both fields.
+    average_rent only exists post-detail-scrape (top-N only), so it can't influence which listings
+    get detail-scraped in the first place — `pipeline.py` now runs `compute_distress_scores` a
+    SECOND time, on the WHOLE batch, right after Stage D completes, so the final displayed score/
+    ranking rewards real yield for the listings it was actually measured on. Rebalanced
+    DEFAULT_WEIGHTS to make room: value 0.50→0.40, freshness/verified each 0.15→0.10, keywords
+    unchanged at 0.20, yield 0.20 new (sums to 1.00). `_percentile_rank_component` is now shared
+    machinery between `value` (cheaper/sqft wins) and `yield` (higher yield wins) so the two can't
+    silently drift apart in behavior.
+  - **New `compute_distress_confidence`** (sibling pure function, same file) — a genuine 0-100
+    figure: how much of `distress_score`'s weight came from REAL data for this listing vs. a
+    neutral 0.5 fallback (missing price/area, no average_rent, unknown days-on-market), weighted by
+    the SAME per-component weights so a missing HIGH-weight field drags confidence down more than a
+    missing low-weight one. This is a data-completeness measure, not a statistical prediction
+    interval — there's no model to have one, and the docstring says so rather than overclaiming.
+    Stored alongside distress_score (new `distress_confidence REAL` column, migration
+    `1786100000000`) at every scoring pass.
+  - **"Rented for" column** (the second half of the same ask) — `average_rent` moved from an inline
+    text fragment under the Listing cell to its own dedicated, SORTABLE table column (and a Compare-
+    modal row), matching the existing Price/Area/AED-sqft/Listed column treatment. Score cell gained
+    a `(NN% conf.)` label + hover tooltip explaining what confidence means, so a low-confidence high
+    score isn't silently presented as equally certain as a high-confidence one.
+  - **Live-verified end-to-end against the real running stack**: restarted the live property host
+    runner process (killed only its own 2 PIDs by exact CommandLine match, never a blanket
+    `taskkill /IM python.exe`) to pick up the code, ran a real small dubizzle job (6 listings,
+    top-2 detail scrape) through the actual site, and confirmed via both direct DB query and the
+    real `/results` API response: `distress_confidence` populated (90 for the 2 detail-scraped
+    listings with real average_rent, 70 for the 2 that never got a detail visit — correctly
+    reflecting the missing yield/freshness signal), `average_rent` correctly NULL for non-detail-
+    scraped rows. Test job deleted after verification.
+  - Tests: 28→38 cases in `tests/test_property_analysis.py` (every pre-existing test that isolates
+    a single component now explicitly zeroes the new `yield` weight, or the DEFAULT_WEIGHTS merge
+    would silently pollute its exact-value assertions — plus new yield-component and confidence
+    tests). Full property suite: 117 passing, zero regressions.
 - **Known follow-up, not yet done**: `supabase/` (CLI config + old Lovable-era migrations) is dead
   weight left over from the original scaffold — the real schema is `db/migrations/*.sql` via
   node-pg-migrate. Safe to delete, just hasn't been done. Prod deployment target (which host, TLS

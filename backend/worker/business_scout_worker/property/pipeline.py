@@ -26,7 +26,10 @@ from business_scout_worker.property import jobs as property_jobs
 from business_scout_worker.property import parse_property
 from business_scout_worker.property.adapters import get_adapter
 from business_scout_worker.property.adapters.base import SearchFilters
-from business_scout_worker.property.analysis import compute_distress_scores
+from business_scout_worker.property.analysis import (
+    compute_distress_confidence,
+    compute_distress_scores,
+)
 from business_scout_worker.property.capture import (
     PropertyBlockedError,
     PropertyCaptureEngine,
@@ -195,13 +198,19 @@ async def run_property_job(
             return
 
         # --- Stage C: scoring (needs the WHOLE batch — price/sqft is ranked relative to it) ---
+        # Runs BEFORE any detail-page data exists, so the yield component (analysis.py) is neutral
+        # 0.5 for everyone here — it doesn't distort the top-N SELECTION below. It's re-derived
+        # for real after Stage D (see the re-score pass further down), once average_rent may be
+        # known for the listings that actually got a detail-page visit.
         await property_jobs.set_property_status(pool, job.id, "scoring")
         await property_jobs.write_log(pool, job.id, "info", "Scoring listings")
         new_listings = list(parsed_by_idx.values())
         if new_listings:
             scores = compute_distress_scores(new_listings, job.score_weights)
-            for listing, score in zip(new_listings, scores, strict=True):
+            confidences = compute_distress_confidence(new_listings, job.score_weights)
+            for listing, score, confidence in zip(new_listings, scores, confidences, strict=True):
                 listing.distress_score = score
+                listing.distress_confidence = confidence
                 await property_jobs.upsert_property_listing(pool, job.id, listing)
 
         # --- Stage D (optional): detail scrape for the top-N by distress_score ---
@@ -256,6 +265,32 @@ async def run_property_job(
             await property_jobs.write_log(
                 pool, job.id, "info", f"Detail scrape done: {detail_done} listings"
             )
+
+            # Re-score the WHOLE batch now that some listings (the ones just detail-scraped) may
+            # have a real average_rent — the yield component in analysis.py was neutral for
+            # everyone during Stage C (nothing had average_rent yet). Re-running it here refines
+            # the FINAL displayed score/ranking to reward real rental yield without disturbing
+            # which listings got a detail-page visit (that selection already happened above, based
+            # on the Stage C scores). Only writes rows whose score/confidence actually changed —
+            # the vast majority (no average_rent either before or after) recompute to the exact
+            # same numbers and are skipped, so this isn't N extra writes for nothing.
+            if detail_done > 0:
+                all_rows_after_detail = await property_jobs.list_property_listing_rows(pool, job.id)
+                batch = [ParsedListing.model_validate(r) for r in all_rows_after_detail]
+                rescored = compute_distress_scores(batch, job.score_weights)
+                reconfidenced = compute_distress_confidence(batch, job.score_weights)
+                for listing, score, confidence in zip(batch, rescored, reconfidenced, strict=True):
+                    if (
+                        listing.distress_score == score
+                        and listing.distress_confidence == confidence
+                    ):
+                        continue
+                    listing.distress_score = score
+                    listing.distress_confidence = confidence
+                    await property_jobs.upsert_property_listing(pool, job.id, listing)
+                await property_jobs.write_log(
+                    pool, job.id, "info", "Re-scored batch with detail-page rental yield data"
+                )
 
         results = await property_jobs.list_property_listing_rows(pool, job.id)
         (job_dir / "results.json").write_text(

@@ -216,7 +216,8 @@ function formatMoney(v: string | number | null, currency: string | null): string
   return n === null ? "—" : `${currency ?? "AED"} ${n.toLocaleString()}`;
 }
 
-type SortKey = "distress_score" | "price" | "price_per_sqft" | "area_sqft" | "listed_days_ago";
+type SortKey =
+  "distress_score" | "price" | "price_per_sqft" | "area_sqft" | "listed_days_ago" | "average_rent";
 
 // The search criteria a job was launched with, condensed to one line for the recent-jobs list —
 // so each row shows what was actually searched for, not just platform + location.
@@ -361,6 +362,8 @@ function PropertyCrawl() {
         return (num(b.area_sqft) ?? -Infinity) - (num(a.area_sqft) ?? -Infinity);
       if (sortKey === "listed_days_ago")
         return (b.listed_days_ago ?? -Infinity) - (a.listed_days_ago ?? -Infinity);
+      if (sortKey === "average_rent")
+        return (num(b.average_rent) ?? -Infinity) - (num(a.average_rent) ?? -Infinity);
       return (b.distress_score ?? -Infinity) - (a.distress_score ?? -Infinity);
     });
     return rows;
@@ -913,6 +916,12 @@ function PropertyCrawl() {
                     />
                     <th className="px-2 py-2 text-left font-medium">Beds/Baths</th>
                     <SortHeader
+                      label="Rented for"
+                      col="average_rent"
+                      sortKey={sortKey}
+                      onSort={setSortKey}
+                    />
+                    <SortHeader
                       label="Listed"
                       col="listed_days_ago"
                       sortKey={sortKey}
@@ -930,7 +939,7 @@ function PropertyCrawl() {
                 <tbody className="divide-y divide-border">
                   {sorted.length === 0 && (
                     <tr>
-                      <td colSpan={10} className="px-2 py-8 text-center text-muted-foreground">
+                      <td colSpan={11} className="px-2 py-8 text-center text-muted-foreground">
                         No listings parsed.
                       </td>
                     </tr>
@@ -1294,13 +1303,13 @@ function ResultRow({
           <span className="truncate text-[11px] text-muted-foreground">
             {l.community ?? l.location_text ?? "—"}
           </span>
-          {/* Detail-page-only fields (see rule: only populated for the job's top-N scraped
-              listings) — shown only when present, never a placeholder "—" for every other row. */}
-          {(l.age_years !== null || l.average_rent !== null) && (
+          {/* Detail-page-only field (see rule: only populated for the job's top-N scraped
+              listings) — shown only when present, never a placeholder "—" for every other row.
+              average_rent has its own dedicated "Rented for" table column instead of appearing
+              here too — no need to duplicate it. */}
+          {l.age_years !== null && (
             <span className="text-[11px] text-muted-foreground">
-              {l.age_years !== null && `${l.age_years} yr${l.age_years === 1 ? "" : "s"} old`}
-              {l.age_years !== null && l.average_rent !== null && " · "}
-              {l.average_rent !== null && `~AED ${Number(l.average_rent).toLocaleString()}/yr rent`}
+              {l.age_years} yr{l.age_years === 1 ? "" : "s"} old
             </span>
           )}
           {l.listed_date !== null && (
@@ -1360,13 +1369,34 @@ function ResultRow({
         </span>
       </td>
       <td className="px-2 py-2 text-xs">
+        {l.average_rent !== null ? (
+          <span title="Detail-page-only field — populated for the job's top-ranked listings">
+            {formatMoney(l.average_rent, l.currency)}/yr
+          </span>
+        ) : (
+          <span className="text-muted-foreground">—</span>
+        )}
+      </td>
+      <td className="px-2 py-2 text-xs">
         {l.listed_days_ago !== null ? `${l.listed_days_ago}d ago` : "—"}
       </td>
       <td className="px-2 py-2">
         {score !== null ? (
-          <div className="flex items-center gap-1.5">
+          <div
+            className="flex items-center gap-1.5"
+            title={
+              l.distress_confidence !== null
+                ? `Confidence: ${l.distress_confidence.toFixed(0)}% of this score is backed by real data (price/area/rent/freshness) rather than a neutral fallback`
+                : undefined
+            }
+          >
             <Progress value={Math.max(0, Math.min(100, score))} className="h-1.5 w-14" />
             <span className="font-mono text-[11px]">{score.toFixed(0)}</span>
+            {l.distress_confidence !== null && (
+              <span className="text-[9px] text-muted-foreground">
+                ({l.distress_confidence.toFixed(0)}% conf.)
+              </span>
+            )}
           </div>
         ) : (
           <span className="text-xs text-muted-foreground">—</span>
@@ -1473,12 +1503,20 @@ function CompareModal({
         l.average_rent !== null ? `AED ${Number(l.average_rent).toLocaleString()}/yr` : "—",
     },
     {
+      label: "Rented for",
+      render: (l) =>
+        l.average_rent !== null ? `${formatMoney(l.average_rent, l.currency)}/yr` : "—",
+    },
+    {
       label: "Listed",
       render: (l) => (l.listed_days_ago !== null ? `${l.listed_days_ago}d ago` : "—"),
     },
     {
       label: "Score",
-      render: (l) => (l.distress_score !== null ? l.distress_score.toFixed(0) : "—"),
+      render: (l) =>
+        l.distress_score !== null
+          ? `${l.distress_score.toFixed(0)}${l.distress_confidence !== null ? ` (${l.distress_confidence.toFixed(0)}% conf.)` : ""}`
+          : "—",
     },
     { label: "Verified", render: (l) => (l.verified ? "Yes" : "—") },
   ];
