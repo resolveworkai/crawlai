@@ -50,3 +50,20 @@ export const propertyJobIdParamsSchema = z.object({ id: z.string().uuid() });
 export const propertyExportQuerySchema = z.object({
   format: z.enum(["csv", "xlsx", "json"]).default("csv"),
 });
+
+// --- Wishlist (save-for-later) ---------------------------------------------------------------
+
+export const addToWishlistSchema = z.object({
+  listingId: z.string().uuid(),
+});
+
+export type AddToWishlistInput = z.infer<typeof addToWishlistSchema>;
+
+export const wishlistItemIdParamsSchema = z.object({ id: z.string().uuid() });
+
+// --- Per-listing refresh -----------------------------------------------------------------------
+
+export const listingRefreshStatusParamsSchema = z.object({
+  id: z.string().uuid(),
+  refreshId: z.string().uuid(),
+});

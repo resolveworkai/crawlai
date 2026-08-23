@@ -351,9 +351,21 @@ class PropertyFinderAdapter(PlatformAdapter):
         except Exception as exc:  # noqa: BLE001 - image gallery is best-effort
             logger.debug("propertyfinder image gallery extraction skipped", error=str(exc))
 
+        # Detail-page's own price — confirmed live 2026-08-22: `[data-testid="property-price"]` is
+        # unique on the page (verified count == 1 against a real listing).
+        price_val: float | None = None
+        try:
+            price_val = await _testid_number(page, "property-price")
+            if price_val is None:
+                body = await page.inner_text("body")
+                price_val = pp.parse_price(body).value
+        except Exception as exc:  # noqa: BLE001 - price refresh is best-effort
+            logger.debug("propertyfinder detail-page price extraction skipped", error=str(exc))
+
         return DomDetailFields(
             description=description,
             agent_name=agent_name,
             phone_number=phone,
             image_urls=image_urls,
+            price=price_val,
         )

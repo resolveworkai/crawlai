@@ -442,6 +442,61 @@ export interface PropertyListing {
   created_at: string;
 }
 
+// A save-for-later SNAPSHOT of one listing — mirrors backend/api/src/types/db.ts's
+// PropertyWishlistItem exactly (see db/migrations/1785600000000_property-wishlist.sql for why
+// this isn't a live reference to PropertyListing).
+export interface PropertyWishlistItem {
+  id: string;
+  created_by: string | null;
+  source_listing_id: string | null;
+  platform: PropertyPlatform;
+  title: string;
+  listing_url: string | null;
+  image_url: string | null;
+  price: string | null;
+  currency: string | null;
+  area_sqft: string | null;
+  price_per_sqft: string | null;
+  bedrooms: number | null;
+  bathrooms: number | null;
+  property_type: string | null;
+  location_text: string | null;
+  community: string | null;
+  is_offplan: boolean;
+  age_years: number | null;
+  average_rent: string | null;
+  listed_date: string | null;
+  distress_score: number | null;
+  notes: string | null;
+  created_at: string;
+}
+
+export type PropertyListingRefreshStatus = "queued" | "running" | "done" | "failed";
+
+// Mirrors backend/api/src/types/db.ts's PropertyListingRefresh — the per-row "Refresh" button's
+// request/result.
+export interface PropertyListingRefresh {
+  id: string;
+  listing_id: string;
+  listing_url: string;
+  platform: PropertyPlatform;
+  status: PropertyListingRefreshStatus;
+  old_price: string | null;
+  new_price: string | null;
+  error_message: string | null;
+  requested_at: string;
+  completed_at: string | null;
+}
+
+// PropertyListing enriched with the cross-job/day price-drop signal (previous_price/price_dropped)
+// plus the most recent completed manual refresh, if any — see backend/api/src/db/
+// propertyListings.ts's listPropertyListingsWithHistory, which is what /results now returns.
+export interface PropertyListingWithHistory extends PropertyListing {
+  previous_price: string | null;
+  price_dropped: boolean;
+  latest_refresh: PropertyListingRefresh | null;
+}
+
 export interface PropertyAnalysisSummary {
   listingCount: number;
   needsReviewCount: number;

@@ -18,9 +18,13 @@ import { rm } from "node:fs/promises";
 import { requireAuth, requireRole } from "../middleware/auth.js";
 import { validate } from "../middleware/validate.js";
 import {
+  addToWishlistSchema,
   createPropertyJobSchema,
+  listingRefreshStatusParamsSchema,
   propertyExportQuerySchema,
   propertyJobIdParamsSchema,
+  wishlistItemIdParamsSchema,
+  type AddToWishlistInput,
   type CreatePropertyJobInput,
 } from "../schemas/propertyCrawl.js";
 import {
@@ -32,7 +36,20 @@ import {
   MAX_PROPERTY_RETRIES,
   retryPropertyJob,
 } from "../db/propertyJobs.js";
-import { listPropertyListings } from "../db/propertyListings.js";
+import {
+  findPropertyListingWithPlatform,
+  listPropertyListingsWithHistory,
+} from "../db/propertyListings.js";
+import {
+  createListingRefresh,
+  findListingRefreshById,
+  findPendingRefreshForListing,
+} from "../db/propertyListingRefreshes.js";
+import {
+  addToWishlist,
+  listWishlist,
+  removeFromWishlist,
+} from "../db/propertyWishlist.js";
 import { buildPropertyExport } from "../services/propertyExportService.js";
 import { buildPropertyAnalysis } from "../services/propertyAnalysisService.js";
 import { config } from "../config.js";
@@ -130,9 +147,53 @@ propertyCrawlRouter.get(
   async (req, res) => {
     const job = await findPropertyJobById(req.params.id as string);
     if (!job) throw new NotFoundError("Property job not found");
-    // Already ranked best-deal-first (distress_score desc) by listPropertyListings' ORDER BY.
-    const listings = await listPropertyListings(job.id);
+    // Already ranked best-deal-first (distress_score desc) by the ORDER BY. Enriched with each
+    // row's previous_price/price_dropped (cross-job/day) + latest_refresh (manual, per-row) — see
+    // db/propertyListings.ts's listPropertyListingsWithHistory.
+    const listings = await listPropertyListingsWithHistory(job.id);
     res.json({ listings });
+  },
+);
+
+// --- Per-listing refresh (re-check ONE listing's current price live, without re-running a whole
+// search job) ------------------------------------------------------------------------------------
+
+propertyCrawlRouter.post(
+  "/property-crawl/listings/:id/refresh",
+  requireAuth,
+  requireRole("operator"),
+  validate(propertyJobIdParamsSchema, "params"), // reused: same shape ({ id: uuid }), diff resource
+  async (req, res) => {
+    const listingId = req.params.id as string;
+    const existingPending = await findPendingRefreshForListing(listingId);
+    if (existingPending) {
+      res.status(200).json({ refresh: existingPending });
+      return;
+    }
+    const found = await findPropertyListingWithPlatform(listingId);
+    if (!found) throw new NotFoundError("Listing not found");
+    if (!found.listing.listing_url) {
+      throw new ValidationError("This listing has no source URL to refresh from.");
+    }
+    const refresh = await createListingRefresh(
+      listingId,
+      found.listing.listing_url,
+      found.platform,
+    );
+    res.status(201).json({ refresh });
+  },
+);
+
+propertyCrawlRouter.get(
+  "/property-crawl/listings/:id/refresh/:refreshId",
+  requireAuth,
+  validate(listingRefreshStatusParamsSchema, "params"),
+  async (req, res) => {
+    const refresh = await findListingRefreshById(req.params.refreshId as string);
+    if (!refresh || refresh.listing_id !== req.params.id) {
+      throw new NotFoundError("Refresh request not found");
+    }
+    res.json({ refresh });
   },
 );
 
@@ -204,6 +265,46 @@ propertyCrawlRouter.delete(
       const jobRoot = path.resolve(config.PROPERTY_CAPTURES_DIR, job.storage_dir);
       await rm(jobRoot, { recursive: true, force: true }).catch(() => undefined);
     }
+    res.status(204).send();
+  },
+);
+
+// --- Wishlist (save-for-later) -----------------------------------------------------------------
+// A snapshot of a listing's fields at save-time, independent of whichever job first captured it —
+// see db/propertyWishlist.ts's own header for why. Reads are requireAuth-only (mirrors every other
+// GET in this router); the mutating routes require "operator", same as job create/retry/delete.
+
+propertyCrawlRouter.get("/property-crawl/wishlist", requireAuth, async (_req, res) => {
+  const items = await listWishlist();
+  res.json({ items });
+});
+
+propertyCrawlRouter.post(
+  "/property-crawl/wishlist",
+  requireAuth,
+  requireRole("operator"),
+  validate(addToWishlistSchema),
+  async (req, res) => {
+    const { listingId } = req.body as AddToWishlistInput;
+    const found = await findPropertyListingWithPlatform(listingId);
+    if (!found) throw new NotFoundError("Listing not found");
+    const { item, alreadySaved } = await addToWishlist(
+      found.listing,
+      found.platform,
+      req.user!.id,
+    );
+    res.status(alreadySaved ? 200 : 201).json({ item, alreadySaved });
+  },
+);
+
+propertyCrawlRouter.delete(
+  "/property-crawl/wishlist/:id",
+  requireAuth,
+  requireRole("operator"),
+  validate(wishlistItemIdParamsSchema, "params"),
+  async (req, res) => {
+    const removed = await removeFromWishlist(req.params.id as string);
+    if (!removed) throw new NotFoundError("Wishlist item not found");
     res.status(204).send();
   },
 );

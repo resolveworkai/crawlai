@@ -43,6 +43,7 @@ from psycopg.rows import dict_row
 from business_scout_worker.logging_config import get_logger
 from business_scout_worker.property import jobs as property_jobs
 from business_scout_worker.property import pipeline as property_pipeline
+from business_scout_worker.property import refresh as property_refresh
 from business_scout_worker.settings import load_settings
 
 logger = get_logger("property_host_runner")
@@ -137,6 +138,24 @@ async def _run() -> int:
         if recovered:
             logger.info("recovered orphaned property jobs", count=recovered)
 
+        # Refreshes drained FIRST, every cycle — they're a single quick page visit each (unlike a
+        # whole search job, which can run for minutes), and this runner only ever has one browser
+        # session, so a refresh can never actually run concurrently with an in-progress job's own
+        # navigation regardless of ordering. Draining them first just means a refresh queued while
+        # a job is mid-run gets picked up on the very next poll tick after that job finishes,
+        # rather than waiting for any OTHER already-queued jobs to drain too.
+        while True:
+            listing_refresh = await property_jobs.claim_pending_listing_refresh(pool)
+            if listing_refresh is None:
+                break
+            logger.info(
+                "listing refresh claimed",
+                refresh_id=str(listing_refresh.id),
+                listing_id=str(listing_refresh.listing_id),
+            )
+            await property_refresh.run_listing_refresh(pool, listing_refresh, settings)
+            claimed += 1
+
         while True:
             job = await property_jobs.claim_pending_property_job(pool)
             if job is None:
@@ -153,9 +172,9 @@ async def _run() -> int:
         await pool.close()
 
     if claimed == 0:
-        logger.info("no queued property jobs to run — nothing to do")
+        logger.info("no queued property jobs or refreshes to run — nothing to do")
     else:
-        logger.info("property host runner done", jobs_run=claimed)
+        logger.info("property host runner done", units_run=claimed)
     return claimed
 
 

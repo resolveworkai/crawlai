@@ -16,7 +16,12 @@ from psycopg.types.json import Jsonb
 from psycopg_pool import AsyncConnectionPool
 
 from business_scout_worker.models import LogLevel
-from business_scout_worker.property.models import ParsedListing, PropertyJob, PropertyJobStatus
+from business_scout_worker.property.models import (
+    ListingRefresh,
+    ParsedListing,
+    PropertyJob,
+    PropertyJobStatus,
+)
 
 
 async def claim_pending_property_job(pool: AsyncConnectionPool) -> PropertyJob | None:
@@ -249,4 +254,84 @@ async def increment_retry_count(pool: AsyncConnectionPool, job_id: UUID) -> None
     async with pool.connection() as conn:
         await conn.execute(
             "UPDATE property_jobs SET retry_count = retry_count + 1 WHERE id = %s", (str(job_id),)
+        )
+
+
+# --- Single-listing refresh queue (see property/refresh.py + db/migrations/
+# 1785700000000_property-listing-refreshes.sql) — a much lighter claim than a whole search job,
+# but the same FOR UPDATE SKIP LOCKED pattern so two concurrent host-runner cycles can't double-
+# claim the same refresh request.
+
+
+async def get_listing_price(pool: AsyncConnectionPool, listing_id: UUID) -> float | None:
+    async with pool.connection() as conn:
+        cur = await conn.execute(
+            "SELECT price FROM property_listings WHERE id = %s", (str(listing_id),)
+        )
+        row = await cur.fetchone()
+    if row is None:
+        return None
+    price = cast("dict[str, Any]", row)["price"]
+    return float(price) if price is not None else None
+
+
+async def claim_pending_listing_refresh(pool: AsyncConnectionPool) -> ListingRefresh | None:
+    async with pool.connection() as conn:
+        cur = await conn.execute(
+            """
+            UPDATE property_listing_refreshes SET status = 'running'
+            WHERE id = (
+                SELECT id FROM property_listing_refreshes
+                WHERE status = 'queued'
+                ORDER BY requested_at ASC
+                FOR UPDATE SKIP LOCKED
+                LIMIT 1
+            )
+            RETURNING *
+            """
+        )
+        row = await cur.fetchone()
+    return ListingRefresh.model_validate(row) if row is not None else None
+
+
+async def finish_listing_refresh(
+    pool: AsyncConnectionPool,
+    refresh_id: UUID,
+    *,
+    status: str,
+    old_price: float | None = None,
+    new_price: float | None = None,
+    error_message: str | None = None,
+) -> None:
+    async with pool.connection() as conn:
+        await conn.execute(
+            """
+            UPDATE property_listing_refreshes
+            SET status = %s, old_price = %s, new_price = %s, error_message = %s,
+                completed_at = now()
+            WHERE id = %s
+            """,
+            (status, old_price, new_price, error_message, str(refresh_id)),
+        )
+
+
+async def update_listing_price(pool: AsyncConnectionPool, listing_id: UUID, price: float) -> None:
+    """Applies a refreshed price directly onto the existing property_listings row — this is the
+    'fresh row should be fetched' half of the refresh flow: the row the operator is already
+    looking at updates in place, it doesn't wait for a brand-new job/row to appear. price_per_sqft
+    is recomputed from the row's own stored area_sqft when present, same formula pipeline.py uses
+    for a normal capture, so the two columns can't drift out of sync after a refresh."""
+    async with pool.connection() as conn:
+        await conn.execute(
+            """
+            UPDATE property_listings
+            SET price = %s,
+                price_per_sqft = CASE
+                    WHEN area_sqft IS NOT NULL AND area_sqft > 0
+                    THEN round(%s::numeric / area_sqft, 2)
+                    ELSE price_per_sqft
+                END
+            WHERE id = %s
+            """,
+            (price, price, str(listing_id)),
         )

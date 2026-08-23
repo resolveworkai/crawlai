@@ -452,6 +452,9 @@ export interface PropertyListing {
   // string, same convention as price/area_sqft above.
   age_years: number | null;
   average_rent: string | null;
+  // Detail-page-only, dubizzle's own "posted-on" field — raw text (e.g. "4th June 2026"), not
+  // parsed into a date.
+  listed_date: string | null;
   distress_score: number | null;
   extraction_source: PropertyExtractionSource;
   ocr_confidence: number | null;
@@ -460,6 +463,63 @@ export interface PropertyListing {
   source_images: string[];
   detail_scraped: boolean;
   created_at: Date;
+}
+
+// A save-for-later SNAPSHOT of one listing (see db/migrations/1785600000000_property-wishlist.sql
+// for why this isn't a live FK to PropertyListing) — same string-vs-number NUMERIC-column
+// convention as PropertyListing above.
+export interface PropertyWishlistItem {
+  id: string;
+  created_by: string | null;
+  source_listing_id: string | null;
+  platform: PropertyPlatform;
+  title: string;
+  listing_url: string | null;
+  image_url: string | null;
+  price: string | null;
+  currency: string | null;
+  area_sqft: string | null;
+  price_per_sqft: string | null;
+  bedrooms: number | null;
+  bathrooms: number | null;
+  property_type: string | null;
+  location_text: string | null;
+  community: string | null;
+  is_offplan: boolean;
+  age_years: number | null;
+  average_rent: string | null;
+  listed_date: string | null;
+  distress_score: number | null;
+  notes: string | null;
+  created_at: Date;
+}
+
+export type PropertyListingRefreshStatus = "queued" | "running" | "done" | "failed";
+
+// Mirrors property_listing_refreshes (db/migrations/1785700000000_property-listing-refreshes.sql)
+// — the per-row "Refresh" button's request/result. old_price/new_price together are the audit
+// trail a manual refresh's own price-drop highlight is computed from.
+export interface PropertyListingRefresh {
+  id: string;
+  listing_id: string;
+  listing_url: string;
+  platform: PropertyPlatform;
+  status: PropertyListingRefreshStatus;
+  old_price: string | null;
+  new_price: string | null;
+  error_message: string | null;
+  requested_at: Date;
+  completed_at: Date | null;
+}
+
+// A PropertyListing enriched, at read-time, with the previous price the SAME listing_url was seen
+// at in an EARLIER job's capture (any day) — the cross-job/day price-drop signal (see
+// db/propertyListings.ts's listPropertyListingsWithPriceHistory). Distinct from
+// PropertyListingRefresh above, which is the same signal but for a manual, single-row refresh.
+export interface PropertyListingWithHistory extends PropertyListing {
+  previous_price: string | null;
+  price_dropped: boolean;
+  latest_refresh: PropertyListingRefresh | null;
 }
 
 // --- Marketing / Messaging (see md/MARKETING.md + db/migrations/*marketing.sql) ---

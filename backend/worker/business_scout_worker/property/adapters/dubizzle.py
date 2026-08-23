@@ -286,6 +286,20 @@ class DubizzleAdapter(PlatformAdapter):
         except Exception as exc:  # noqa: BLE001 - image gallery is best-effort
             logger.debug("dubizzle image gallery extraction skipped", error=str(exc))
 
+        # Detail-page's own price — confirmed live 2026-08-22: the FIRST `[data-testid="listing-
+        # price"]` match on the page is the listing's own price; a "similar properties" carousel
+        # further down the page reuses the same testid on unrelated cards, but always sorts after
+        # it in DOM order, so query_selector's first-match semantics are safe here (verified
+        # against a real listing whose DB-stored card price matched this element exactly).
+        price_val: float | None = None
+        try:
+            price_val = await _testid_number(page, "listing-price")
+            if price_val is None:
+                body = await page.inner_text("body")
+                price_val = pp.parse_price(body).value
+        except Exception as exc:  # noqa: BLE001 - price refresh is best-effort
+            logger.debug("dubizzle detail-page price extraction skipped", error=str(exc))
+
         return DomDetailFields(
             description=description,
             phone_number=phone,
@@ -293,4 +307,5 @@ class DubizzleAdapter(PlatformAdapter):
             age_years=age_years,
             average_rent=average_rent,
             listed_date=listed_date,
+            price=price_val,
         )

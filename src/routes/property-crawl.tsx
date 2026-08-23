@@ -8,7 +8,8 @@
 // each one as a "distress deal" (best value for money), and — for the top-N ranked listings —
 // reveals a phone number and builds a wa.me WhatsApp link with a custom message.
 import { createFileRoute } from "@tanstack/react-router";
-import { useEffect, useMemo, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { AppShell } from "@/components/app-shell";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -38,12 +39,18 @@ import { RequireAuth } from "@/components/require-auth";
 import {
   propertyExportUrl,
   propertyImageUrl,
+  propertyKeys,
+  useAddToWishlist,
   useCreatePropertyJob,
   useDeletePropertyJob,
+  useListingRefreshStatus,
   usePropertyAnalysis,
   usePropertyJob,
   usePropertyJobs,
   usePropertyResults,
+  usePropertyWishlist,
+  useRefreshListing,
+  useRemoveFromWishlist,
   useRetryPropertyJob,
 } from "@/hooks/usePropertyCrawl";
 import { useGeocodeSuggestions } from "@/hooks/useGeocode";
@@ -55,14 +62,18 @@ import {
   ChevronDown,
   Download,
   ExternalLink,
+  GitCompare,
+  Heart,
   Home,
   ImageOff,
   Loader2,
   MapPin,
   MessageCircle,
+  RefreshCw,
   Ruler,
   RotateCcw,
   ShieldCheck,
+  TrendingDown,
   Trash2,
   Trophy,
   X,
@@ -72,7 +83,7 @@ import type {
   GeocodeResult,
   PropertyJob,
   PropertyJobStatus,
-  PropertyListing,
+  PropertyListingWithHistory,
   PropertyPlatform,
   PropertyPurpose,
   PropertyStatus,
@@ -237,6 +248,17 @@ function PropertyCrawl() {
   const [sqftMin, setSqftMin] = useState("");
   const [sqftMax, setSqftMax] = useState("");
 
+  // Compare selection — deliberately GLOBAL (not scoped to the currently-focused job): stores the
+  // full listing snapshot, keyed by listing id, so a listing checked while viewing one job's
+  // results stays comparable after switching to a DIFFERENT job's results (which unmounts the
+  // first job's `results` array entirely) — comparing across two separate searches only works if
+  // the compared rows' own data is held here, not re-derived from whichever job is on screen now.
+  const [compareSelection, setCompareSelection] = useState<Map<string, PropertyListingWithHistory>>(
+    new Map(),
+  );
+  const [compareOpen, setCompareOpen] = useState(false);
+  const [wishlistOpen, setWishlistOpen] = useState(false);
+
   const { data: jobs = [] } = usePropertyJobs();
   const runningJob = jobs.find((j) => RUNNING.has(j.status));
   const queuedCount = jobs.filter((j) => j.status === "queued").length;
@@ -254,6 +276,15 @@ function PropertyCrawl() {
   const createJob = useCreatePropertyJob();
   const deleteJob = useDeletePropertyJob();
   const retryJob = useRetryPropertyJob();
+
+  const { data: wishlist = [] } = usePropertyWishlist();
+  // Membership keyed by listing_url — the wishlist's own real, stable identity (see
+  // propertyWishlist.ts's header) — so a listing shows as "saved" consistently across different
+  // jobs that happened to capture the SAME real ad, not just within one job's results.
+  const wishlistedUrls = useMemo(
+    () => new Set(wishlist.map((w) => w.listing_url).filter((u): u is string => u !== null)),
+    [wishlist],
+  );
 
   // Distinct community/building names actually present in this job's captured listings — always
   // accurate to what was really scraped, never a fabricated/static list. A listing with neither
@@ -335,6 +366,15 @@ function PropertyCrawl() {
         onError: (err) => toast.error(err.message),
       },
     );
+  }
+
+  function toggleCompare(l: PropertyListingWithHistory) {
+    setCompareSelection((prev) => {
+      const next = new Map(prev);
+      if (next.has(l.id)) next.delete(l.id);
+      else next.set(l.id, l);
+      return next;
+    });
   }
 
   return (
@@ -531,6 +571,22 @@ function PropertyCrawl() {
         )}
       </Card>
 
+      <div className="mt-4 flex items-center justify-between">
+        <button
+          onClick={() => setWishlistOpen((v) => !v)}
+          className="flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground"
+        >
+          <Heart
+            className={`h-4 w-4 ${wishlist.length > 0 ? "fill-destructive text-destructive" : ""}`}
+          />
+          Wishlist{wishlist.length > 0 ? ` (${wishlist.length})` : ""}
+          <ChevronDown
+            className={`h-3.5 w-3.5 transition-transform ${wishlistOpen ? "rotate-180" : ""}`}
+          />
+        </button>
+      </div>
+      {wishlistOpen && <WishlistPanel />}
+
       {focus && (
         <Card className="mt-4 border-border bg-card p-5">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -722,6 +778,9 @@ function PropertyCrawl() {
               <table className="w-full text-sm">
                 <thead>
                   <tr className="border-b border-border bg-muted/30 text-[11px] uppercase tracking-wide text-muted-foreground">
+                    <th className="px-2 py-2 text-left font-medium">
+                      <span className="sr-only">Compare</span>
+                    </th>
                     <th className="px-2 py-2 text-left font-medium">Photo</th>
                     <th className="px-2 py-2 text-left font-medium">Listing</th>
                     <SortHeader label="Price" col="price" sortKey={sortKey} onSort={setSortKey} />
@@ -756,19 +815,59 @@ function PropertyCrawl() {
                 <tbody className="divide-y divide-border">
                   {sorted.length === 0 && (
                     <tr>
-                      <td colSpan={9} className="px-2 py-8 text-center text-muted-foreground">
+                      <td colSpan={10} className="px-2 py-8 text-center text-muted-foreground">
                         No listings parsed.
                       </td>
                     </tr>
                   )}
                   {sorted.map((l) => (
-                    <ResultRow key={l.id} l={l} jobId={focus.id} />
+                    <ResultRow
+                      key={l.id}
+                      l={l}
+                      jobId={focus.id}
+                      compareChecked={compareSelection.has(l.id)}
+                      onToggleCompare={() => toggleCompare(l)}
+                      wishlisted={l.listing_url !== null && wishlistedUrls.has(l.listing_url)}
+                    />
                   ))}
                 </tbody>
               </table>
             </div>
           )}
         </Card>
+      )}
+
+      {compareSelection.size > 0 && (
+        <div className="fixed bottom-4 left-1/2 z-30 flex -translate-x-1/2 items-center gap-3 rounded-full border border-border bg-card px-4 py-2 shadow-lg">
+          <GitCompare className="h-4 w-4 text-primary" />
+          <span className="text-sm">
+            {compareSelection.size} listing{compareSelection.size === 1 ? "" : "s"} selected
+          </span>
+          <Button size="sm" className="h-7" onClick={() => setCompareOpen(true)}>
+            Compare
+          </Button>
+          <button
+            onClick={() => setCompareSelection(new Map())}
+            className="text-muted-foreground hover:text-foreground"
+            title="Clear compare selection"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+      )}
+
+      {compareOpen && (
+        <CompareModal
+          listings={Array.from(compareSelection.values())}
+          onRemove={(id) =>
+            setCompareSelection((prev) => {
+              const next = new Map(prev);
+              next.delete(id);
+              return next;
+            })
+          }
+          onClose={() => setCompareOpen(false)}
+        />
       )}
 
       <Card className="mt-4 border-border bg-card">
@@ -959,13 +1058,33 @@ function SortHeader({
   );
 }
 
-function ResultRow({ l, jobId }: { l: PropertyListing; jobId: string }) {
+function ResultRow({
+  l,
+  jobId,
+  compareChecked,
+  onToggleCompare,
+  wishlisted,
+}: {
+  l: PropertyListingWithHistory;
+  jobId: string;
+  compareChecked: boolean;
+  onToggleCompare: () => void;
+  wishlisted: boolean;
+}) {
   const shotUrl = propertyImageUrl(jobId, l.source_images[0]);
   const thumb = l.image_urls[0] ?? shotUrl;
   const score = l.distress_score;
+  const addToWishlist = useAddToWishlist();
 
   return (
-    <tr className="hover:bg-accent/20">
+    <tr className={`hover:bg-accent/20 ${l.price_dropped ? "bg-success/10" : ""}`}>
+      <td className="px-2 py-2">
+        <Checkbox
+          checked={compareChecked}
+          onCheckedChange={onToggleCompare}
+          aria-label="Select for comparison"
+        />
+      </td>
       <td className="px-2 py-2">
         {thumb ? (
           <img
@@ -1019,6 +1138,32 @@ function ResultRow({ l, jobId }: { l: PropertyListing; jobId: string }) {
                 off-plan
               </span>
             )}
+            {l.price_dropped && (
+              <span
+                title="Price dropped since it was last seen"
+                className="flex shrink-0 items-center gap-0.5 rounded bg-success/20 px-1 text-[9px] uppercase text-success"
+              >
+                <TrendingDown className="h-2.5 w-2.5" /> price drop
+              </span>
+            )}
+            <button
+              onClick={() => {
+                if (wishlisted) return;
+                addToWishlist.mutate(l.id, {
+                  onSuccess: ({ alreadySaved }) =>
+                    toast.success(alreadySaved ? "Already in wishlist" : "Saved to wishlist"),
+                  onError: (e) => toast.error(e.message),
+                });
+              }}
+              disabled={addToWishlist.isPending}
+              title={wishlisted ? "In your wishlist" : "Save to wishlist"}
+              className="shrink-0"
+            >
+              <Heart
+                className={`h-3.5 w-3.5 ${wishlisted ? "fill-destructive text-destructive" : "text-muted-foreground hover:text-destructive"}`}
+              />
+            </button>
+            <RefreshListingButton listing={l} />
           </div>
           <span className="truncate text-[11px] text-muted-foreground">
             {l.community ?? l.location_text ?? "—"}
@@ -1046,7 +1191,23 @@ function ResultRow({ l, jobId }: { l: PropertyListing; jobId: string }) {
           )}
         </div>
       </td>
-      <td className="px-2 py-2 text-xs">{formatMoney(l.price, l.currency)}</td>
+      <td className="px-2 py-2 text-xs">
+        {(() => {
+          const priorPrice = l.previous_price ?? l.latest_refresh?.old_price ?? null;
+          return (
+            <div className="flex flex-col">
+              <span className={l.price_dropped ? "font-medium text-success" : undefined}>
+                {formatMoney(l.price, l.currency)}
+              </span>
+              {l.price_dropped && priorPrice !== null && (
+                <span className="text-[10px] text-muted-foreground line-through">
+                  {formatMoney(priorPrice, l.currency)}
+                </span>
+              )}
+            </div>
+          );
+        })()}
+      </td>
       <td className="px-2 py-2 text-xs">
         {l.area_sqft !== null ? (
           <span className="inline-flex items-center gap-1">
@@ -1100,6 +1261,224 @@ function ResultRow({ l, jobId }: { l: PropertyListing; jobId: string }) {
         )}
       </td>
     </tr>
+  );
+}
+
+// Per-row "re-check this exact listing's live price" button — queues a refresh, polls it to a
+// terminal state, then re-fetches the job's results so the row shows the fresh price (and, if it
+// came down, the green price-drop highlight) without a full page reload.
+function RefreshListingButton({ listing }: { listing: PropertyListingWithHistory }) {
+  const [refreshId, setRefreshId] = useState<string | undefined>(undefined);
+  const refreshListing = useRefreshListing();
+  const { data: statusData } = useListingRefreshStatus(listing.id, refreshId);
+  const status = statusData?.refresh.status;
+  const queryClient = useQueryClient();
+  const pending = status === "queued" || status === "running" || refreshListing.isPending;
+
+  useEffect(() => {
+    if (status === "done" || status === "failed") {
+      void queryClient.invalidateQueries({ queryKey: propertyKeys.results(listing.job_id) });
+      if (status === "failed") {
+        toast.error(statusData?.refresh.error_message ?? "Refresh failed");
+      } else {
+        const oldP = statusData?.refresh.old_price;
+        const newP = statusData?.refresh.new_price;
+        toast.success(
+          oldP !== null && newP !== null && oldP !== undefined && newP !== undefined
+            ? `Refreshed — ${Number(newP) < Number(oldP) ? "price dropped" : "price checked"} (${Number(newP).toLocaleString()})`
+            : "Refreshed",
+        );
+      }
+      setRefreshId(undefined);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- only re-run when status flips
+  }, [status]);
+
+  return (
+    <button
+      onClick={() =>
+        refreshListing.mutate(listing.id, {
+          onSuccess: ({ refresh }) => setRefreshId(refresh.id),
+          onError: (e) => toast.error(e.message),
+        })
+      }
+      disabled={pending}
+      title="Re-check this listing's current price"
+      className="shrink-0"
+    >
+      <RefreshCw
+        className={`h-3.5 w-3.5 text-muted-foreground hover:text-foreground ${pending ? "animate-spin" : ""}`}
+      />
+    </button>
+  );
+}
+
+// Side-by-side comparison of every checked listing — works across jobs (the caller passes the
+// snapshot held in compareSelection, not a re-fetch of the current job's results) since a listing
+// stays comparable after switching to a different search's results.
+function CompareModal({
+  listings,
+  onRemove,
+  onClose,
+}: {
+  listings: PropertyListingWithHistory[];
+  onRemove: (id: string) => void;
+  onClose: () => void;
+}) {
+  const rows: { label: string; render: (l: PropertyListingWithHistory) => ReactNode }[] = [
+    { label: "Price", render: (l) => formatMoney(l.price, l.currency) },
+    {
+      label: "Area",
+      render: (l) => (l.area_sqft !== null ? `${Number(l.area_sqft).toLocaleString()} sqft` : "—"),
+    },
+    {
+      label: "AED/sqft",
+      render: (l) => (l.price_per_sqft !== null ? Number(l.price_per_sqft).toLocaleString() : "—"),
+    },
+    { label: "Beds", render: (l) => l.bedrooms ?? "—" },
+    { label: "Baths", render: (l) => l.bathrooms ?? "—" },
+    { label: "Type", render: (l) => l.property_type ?? "—" },
+    { label: "Community", render: (l) => l.community ?? l.location_text ?? "—" },
+    { label: "Status", render: (l) => (l.is_offplan ? "Off-plan" : "Ready") },
+    { label: "Age", render: (l) => (l.age_years !== null ? `${l.age_years} yrs` : "—") },
+    {
+      label: "Avg. rent",
+      render: (l) =>
+        l.average_rent !== null ? `AED ${Number(l.average_rent).toLocaleString()}/yr` : "—",
+    },
+    {
+      label: "Listed",
+      render: (l) => (l.listed_days_ago !== null ? `${l.listed_days_ago}d ago` : "—"),
+    },
+    {
+      label: "Score",
+      render: (l) => (l.distress_score !== null ? l.distress_score.toFixed(0) : "—"),
+    },
+    { label: "Verified", render: (l) => (l.verified ? "Yes" : "—") },
+  ];
+
+  return (
+    <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/50 p-4">
+      <div className="max-h-[85vh] w-full max-w-4xl overflow-auto rounded-lg border border-border bg-card p-4">
+        <div className="mb-3 flex items-center justify-between">
+          <h3 className="flex items-center gap-1.5 text-sm font-semibold">
+            <GitCompare className="h-4 w-4" /> Compare listings
+          </h3>
+          <button onClick={onClose} className="text-muted-foreground hover:text-foreground">
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+        {listings.length === 0 ? (
+          <p className="py-6 text-center text-sm text-muted-foreground">
+            No listings selected — check a few rows to compare them here.
+          </p>
+        ) : (
+          <table className="w-full text-xs">
+            <thead>
+              <tr>
+                <th className="w-28 px-2 py-1.5 text-left text-muted-foreground"></th>
+                {listings.map((l) => (
+                  <th key={l.id} className="min-w-[160px] px-2 py-1.5 text-left align-top">
+                    <div className="flex items-start justify-between gap-1">
+                      <span className="line-clamp-2 font-medium" title={l.title}>
+                        {l.title}
+                      </span>
+                      <button
+                        onClick={() => onRemove(l.id)}
+                        className="shrink-0 text-muted-foreground hover:text-destructive"
+                      >
+                        <X className="h-3 w-3" />
+                      </button>
+                    </div>
+                    {l.listing_url && (
+                      <a
+                        href={l.listing_url}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="mt-0.5 flex items-center gap-1 text-[10px] text-primary hover:underline"
+                      >
+                        View listing <ExternalLink className="h-2.5 w-2.5" />
+                      </a>
+                    )}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-border">
+              {rows.map((row) => (
+                <tr key={row.label}>
+                  <td className="px-2 py-1.5 font-medium text-muted-foreground">{row.label}</td>
+                  {listings.map((l) => (
+                    <td key={l.id} className="px-2 py-1.5">
+                      {row.render(l)}
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// Saved-for-later listings — a lightweight variant of the results table (no sort/filter, since
+// this is a small hand-picked list, not a big captured batch).
+function WishlistPanel() {
+  const { data: items = [], isLoading } = usePropertyWishlist();
+  const removeItem = useRemoveFromWishlist();
+
+  return (
+    <Card className="mt-2 border-border bg-card p-4">
+      {isLoading && <p className="text-xs text-muted-foreground">Loading…</p>}
+      {!isLoading && items.length === 0 && (
+        <p className="text-xs text-muted-foreground">
+          Nothing saved yet — click the heart icon on any listing to save it here.
+        </p>
+      )}
+      {items.length > 0 && (
+        <div className="grid gap-2">
+          {items.map((w) => (
+            <div
+              key={w.id}
+              className="flex items-center justify-between gap-3 rounded border border-border px-3 py-2 text-xs"
+            >
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-1.5">
+                  <span className="truncate font-medium" title={w.title}>
+                    {w.title}
+                  </span>
+                  <span className="shrink-0 rounded bg-muted px-1 text-[9px] uppercase text-muted-foreground">
+                    {w.platform}
+                  </span>
+                </div>
+                <span className="text-[11px] text-muted-foreground">
+                  {formatMoney(w.price, w.currency)}
+                  {(w.community ?? w.location_text) ? ` · ${w.community ?? w.location_text}` : ""}
+                </span>
+              </div>
+              <div className="flex shrink-0 items-center gap-2">
+                {w.listing_url && (
+                  <a href={w.listing_url} target="_blank" rel="noreferrer">
+                    <ExternalLink className="h-3.5 w-3.5 text-muted-foreground hover:text-foreground" />
+                  </a>
+                )}
+                <button
+                  onClick={() =>
+                    removeItem.mutate(w.id, { onError: (e) => toast.error(e.message) })
+                  }
+                  disabled={removeItem.isPending}
+                  title="Remove from wishlist"
+                >
+                  <Trash2 className="h-3.5 w-3.5 text-muted-foreground hover:text-destructive" />
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </Card>
   );
 }
 

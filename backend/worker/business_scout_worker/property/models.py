@@ -31,6 +31,7 @@ PropertyEndReason = Literal[
     "end_of_results", "max_pages", "max_listings", "stagnation", "blocked", "error"
 ]
 ExtractionSource = Literal["dom", "dom+ocr", "ocr"]
+ListingRefreshStatus = Literal["queued", "running", "done", "failed"]
 
 
 class PropertyJob(BaseModel):
@@ -62,6 +63,27 @@ class PropertyJob(BaseModel):
     created_at: datetime
     started_at: datetime | None
     finished_at: datetime | None
+
+
+class ListingRefresh(BaseModel):
+    """Mirrors property_listing_refreshes (see
+    db/migrations/1785700000000_property-listing-refreshes.sql) — an on-demand, single-URL
+    re-check queued by the UI's per-row refresh button, processed by the same host runner as
+    property_jobs but through a separate, much cheaper claim/finish path (see
+    property/refresh.py)."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    listing_id: UUID
+    listing_url: str
+    platform: Platform
+    status: ListingRefreshStatus
+    old_price: float | None
+    new_price: float | None
+    error_message: str | None
+    requested_at: datetime
+    completed_at: datetime | None
 
 
 class DomListingFields(BaseModel):
@@ -133,6 +155,13 @@ class DomDetailFields(BaseModel):
     # (e.g. "Posted on: 4th June 2026") — stored as the raw text after the "Posted on:" label
     # rather than attempting a fragile string->date parse that could silently produce a wrong date.
     listed_date: str | None = None
+    # Confirmed live 2026-08-22 (both platforms): the detail page's OWN price element — dubizzle's
+    # `[data-testid="listing-price"]` (confirmed the FIRST DOM match is the listing's own price, a
+    # duplicate-testid "similar properties" carousel further down the page always sorts after it)
+    # and propertyfinder's `[data-testid="property-price"]` (confirmed unique on the page). Used by
+    # the on-demand single-listing refresh flow (property/jobs.py's claim_pending_listing_refresh)
+    # to re-check a saved listing's CURRENT price without re-running a whole search job.
+    price: float | None = None
 
 
 class ParsedListing(BaseModel):

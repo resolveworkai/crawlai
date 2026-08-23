@@ -9,12 +9,14 @@ import { api, fileUrl } from "@/lib/api-client";
 import type {
   PropertyAnalysis,
   PropertyJob,
-  PropertyListing,
+  PropertyListingRefresh,
+  PropertyListingWithHistory,
   PropertyPlatform,
   PropertyPurpose,
   PropertyScoreWeights,
   PropertyStatus,
   PropertyType,
+  PropertyWishlistItem,
 } from "@/types/api";
 
 export const propertyKeys = {
@@ -23,6 +25,9 @@ export const propertyKeys = {
   detail: (id: string) => [...propertyKeys.all, "detail", id] as const,
   results: (id: string) => [...propertyKeys.all, "results", id] as const,
   analysis: (id: string) => [...propertyKeys.all, "analysis", id] as const,
+  wishlist: () => [...propertyKeys.all, "wishlist"] as const,
+  refresh: (listingId: string, refreshId: string) =>
+    [...propertyKeys.all, "refresh", listingId, refreshId] as const,
 };
 
 interface CreatePropertyJobInput {
@@ -78,8 +83,11 @@ export function usePropertyResults(id: string | undefined, enabled: boolean) {
   return useQuery({
     queryKey: propertyKeys.results(id ?? ""),
     queryFn: async () =>
-      (await api.get<{ listings: PropertyListing[] }>(`/property-crawl/jobs/${id}/results`))
-        .listings,
+      (
+        await api.get<{ listings: PropertyListingWithHistory[] }>(
+          `/property-crawl/jobs/${id}/results`,
+        )
+      ).listings,
     enabled: id !== undefined && enabled,
   });
 }
@@ -139,4 +147,75 @@ export function propertyExportUrl(id: string, format: "csv" | "xlsx" | "json"): 
 export function propertyImageUrl(id: string, relPath: string | undefined): string | undefined {
   if (relPath === undefined || relPath === "") return undefined;
   return fileUrl(`/property-crawl/jobs/${id}/images/${relPath}`);
+}
+
+// --- Wishlist (save-for-later) -------------------------------------------------------------------
+
+export function usePropertyWishlist() {
+  return useQuery({
+    queryKey: propertyKeys.wishlist(),
+    queryFn: async () =>
+      (await api.get<{ items: PropertyWishlistItem[] }>("/property-crawl/wishlist")).items,
+  });
+}
+
+export function useAddToWishlist() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (listingId: string) =>
+      api.post<{ item: PropertyWishlistItem; alreadySaved: boolean }>("/property-crawl/wishlist", {
+        listingId,
+      }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: propertyKeys.wishlist() });
+    },
+  });
+}
+
+export function useRemoveFromWishlist() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.delete<void>(`/property-crawl/wishlist/${id}`),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: propertyKeys.wishlist() });
+    },
+  });
+}
+
+// --- Per-listing refresh --------------------------------------------------------------------------
+// Two-step: POST creates (or reuses an already-pending) refresh request, then the caller polls its
+// status via useListingRefreshStatus until it's done/failed — same "queue + poll" shape as job
+// creation/polling above, just for a single row instead of a whole job.
+
+export function useRefreshListing() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (listingId: string) =>
+      api.post<{ refresh: PropertyListingRefresh }>(
+        `/property-crawl/listings/${listingId}/refresh`,
+      ),
+    onSuccess: () => {
+      // The refresh itself updates the listing's row once done — results are re-fetched by the
+      // status poller below reaching a terminal state, not from this call directly.
+      void queryClient.invalidateQueries({ queryKey: propertyKeys.all });
+    },
+  });
+}
+
+const REFRESH_TERMINAL: ReadonlySet<string> = new Set(["done", "failed"]);
+
+export function useListingRefreshStatus(
+  listingId: string | undefined,
+  refreshId: string | undefined,
+) {
+  return useQuery({
+    queryKey: propertyKeys.refresh(listingId ?? "", refreshId ?? ""),
+    queryFn: () =>
+      api.get<{ refresh: PropertyListingRefresh }>(
+        `/property-crawl/listings/${listingId}/refresh/${refreshId}`,
+      ),
+    enabled: listingId !== undefined && refreshId !== undefined,
+    refetchInterval: (query) =>
+      query.state.data && !REFRESH_TERMINAL.has(query.state.data.refresh.status) ? 2_000 : false,
+  });
 }
