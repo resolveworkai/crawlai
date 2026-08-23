@@ -370,6 +370,22 @@ on this status for a deploy decision.
     (3-then-2, 8-then-7, 12-then-11...) until both independently reached `ready` at 15/15 — proof
     they ran as two genuinely separate, concurrent Playwright sessions, not a fast sequential
     illusion.
+- **Product Research (ecom) — noon/amazon concurrency confirmed, independent of Property
+  (2026-08-23, `md/ECOM_CRAWL.md`)**: amazon (headless, run by the container daemon
+  `business_scout_worker.main`) and noon/aliexpress (CDP-required, run by the separate host
+  process `run_noon_host.py`) were ALREADY architecturally able to run concurrently — no code
+  change was needed. `ux_ecom_jobs_single_running`'s indexed expression
+  (`platform = ANY(['noon','aliexpress'])`) only has two possible values, so it's actually TWO
+  independent locks (one per group), not the single global lock its old code comment claimed —
+  fixed the comment (`ecom/jobs.py`) since it was factually misleading. **Verified live**: a real
+  amazon job and a real noon job both showed `status='capturing'` at the same time, with amazon
+  completing (`ready`, 10/10) while noon was still mid-run, unaffected. Confirmed fully
+  independent of Property Research too — own DB tables, own host-runner scripts, own claim logic
+  (module-separation convention already in place); the two DO share the same physical operator
+  Chrome window on port 9222 (by longstanding design, each opens its own Page within it — see
+  `start-noon-host.bat`'s own comment), which is a resource-sharing convenience, not a coupling.
+  Real remaining gap, NOT this session's scope: noon and aliexpress still serialize against each
+  other (same CDP-group lock) — only worth revisiting if aliexpress sees real usage.
 - **Known follow-up, not yet done**: `supabase/` (CLI config + old Lovable-era migrations) is dead
   weight left over from the original scaffold — the real schema is `db/migrations/*.sql` via
   node-pg-migrate. Safe to delete, just hasn't been done. Prod deployment target (which host, TLS
