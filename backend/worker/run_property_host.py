@@ -41,7 +41,7 @@ import psycopg
 from psycopg.rows import dict_row
 
 from business_scout_worker.chrome_health import ensure_chrome_running, write_heartbeat
-from business_scout_worker.logging_config import get_logger
+from business_scout_worker.logging_config import configure_logging, get_logger
 from business_scout_worker.property import jobs as property_jobs
 from business_scout_worker.property import pipeline as property_pipeline
 from business_scout_worker.property import refresh as property_refresh
@@ -244,6 +244,12 @@ async def _watch(poll_seconds: float) -> None:
 
 
 def main() -> None:
+    # Never called before this fix (2026-08-23) — this runner used structlog's un-configured
+    # default the whole time, which is what let a real bug through: a location containing
+    # non-ASCII text (e.g. Arabic) crashed the whole watch cycle trying to log it, on a Windows
+    # launch that hadn't set PYTHONIOENCODING=utf-8 itself. configure_logging() now forces UTF-8
+    # on stdout/stderr directly (see its own comment) — real, not just env-var-dependent.
+    configure_logging(load_settings())
     watch = os.getenv("PROPERTY_HOST_WATCH", "").strip().lower() in ("1", "true", "yes", "on")
     if watch:
         poll_seconds = float(os.getenv("PROPERTY_HOST_POLL_SECONDS", "15"))

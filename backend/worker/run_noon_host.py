@@ -48,7 +48,7 @@ from business_scout_worker.chrome_health import ensure_chrome_running, write_hea
 from business_scout_worker.ecom import jobs as ecom_jobs
 from business_scout_worker.ecom import pipeline as ecom_pipeline
 from business_scout_worker.ecom.adapters import cdp_required_platforms
-from business_scout_worker.logging_config import get_logger
+from business_scout_worker.logging_config import configure_logging, get_logger
 from business_scout_worker.settings import load_settings
 
 logger = get_logger("noon_host_runner")
@@ -213,6 +213,10 @@ async def _watch(poll_seconds: float) -> None:
 
 
 def main() -> None:
+    # Never called before this fix (2026-08-23) — see run_property_host.py's identical comment for
+    # the real bug this closes (a non-ASCII query/location crashing the whole watch cycle on a
+    # Windows launch without PYTHONIOENCODING=utf-8 set externally).
+    configure_logging(load_settings())
     # Default (Proactor) loop is REQUIRED here for Playwright's subprocess driver; the DB goes
     # through the sync shim above precisely so we DON'T need psycopg's Selector-only async loop.
     # ECOM_HOST_WATCH=1 turns this from a one-shot drain into a poll-forever daemon (the mode the
