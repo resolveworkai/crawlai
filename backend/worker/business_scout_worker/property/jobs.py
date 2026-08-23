@@ -24,24 +24,33 @@ from business_scout_worker.property.models import (
 )
 
 
-async def claim_pending_property_job(pool: AsyncConnectionPool) -> PropertyJob | None:
+async def claim_pending_property_job(
+    pool: AsyncConnectionPool, platform: str
+) -> PropertyJob | None:
     """Every property platform is REQUIRES_CDP (see adapters/base.py) — this module has no
-    container-daemon claimant at all, only run_property_host.py. No platform-partitioning is
-    needed here the way ecom's claim is split between container/host (see ecom/jobs.py) — there is
-    only ever one runner group for this whole module, so a plain global claim is correct."""
+    container-daemon claimant at all, only run_property_host.py. Scoped to ONE `platform`
+    (2026-08-23 — see
+    db/migrations/1785800000000_property-jobs-per-platform-concurrency.sql): dubizzle and
+    propertyfinder are independent sites captured by independent Playwright Pages within the same
+    Chrome, so run_property_host.py now runs one claim/drain loop PER platform concurrently — this
+    scoping is what keeps each loop from claiming the other platform's queued jobs. The DB's own
+    partial unique index (per-platform, not global) is the actual guarantee against two jobs on
+    the SAME platform running at once; this WHERE clause is just "don't even try" for the wrong
+    platform."""
     async with pool.connection() as conn:
         cur = await conn.execute(
             """
             UPDATE property_jobs SET status = 'capturing', started_at = now()
             WHERE id = (
                 SELECT id FROM property_jobs
-                WHERE status = 'queued'
+                WHERE status = 'queued' AND platform = %s
                 ORDER BY created_at ASC
                 FOR UPDATE SKIP LOCKED
                 LIMIT 1
             )
             RETURNING *
-            """
+            """,
+            (platform,),
         )
         row = await cur.fetchone()
     return PropertyJob.model_validate(row) if row is not None else None

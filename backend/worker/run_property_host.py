@@ -44,7 +44,8 @@ from business_scout_worker.logging_config import get_logger
 from business_scout_worker.property import jobs as property_jobs
 from business_scout_worker.property import pipeline as property_pipeline
 from business_scout_worker.property import refresh as property_refresh
-from business_scout_worker.settings import load_settings
+from business_scout_worker.property.adapters import cdp_required_platforms
+from business_scout_worker.settings import Settings, load_settings
 
 logger = get_logger("property_host_runner")
 
@@ -121,6 +122,28 @@ class _SyncPoolShim:
         return _SyncConnCtx(self._conninfo)
 
 
+async def _drain_platform_jobs(pool: Any, platform: str, settings: Settings) -> int:
+    """Claims and runs every currently-queued job for ONE platform, one at a time, to completion —
+    this function itself is what `_run()` runs CONCURRENTLY once per platform (via asyncio.gather),
+    so two DIFFERENT platforms' jobs can be capturing at the same moment, each through its own
+    Playwright Page in the shared Chrome, while two jobs on the SAME platform still queue behind
+    each other exactly as before."""
+    claimed = 0
+    while True:
+        job = await property_jobs.claim_pending_property_job(pool, platform)
+        if job is None:
+            break
+        logger.info(
+            "property job claimed",
+            property_job_id=str(job.id),
+            platform=job.platform,
+            location=job.location,
+        )
+        await property_pipeline.run_property_job(pool, job, settings)
+        claimed += 1
+    return claimed
+
+
 async def _run() -> int:
     settings = load_settings()
     if not settings.property_cdp_url:
@@ -156,18 +179,21 @@ async def _run() -> int:
             await property_refresh.run_listing_refresh(pool, listing_refresh, settings)
             claimed += 1
 
-        while True:
-            job = await property_jobs.claim_pending_property_job(pool)
-            if job is None:
-                break
-            logger.info(
-                "property job claimed",
-                property_job_id=str(job.id),
-                platform=job.platform,
-                location=job.location,
+        # One platform loop PER platform, run CONCURRENTLY (2026-08-23) — dubizzle and
+        # propertyfinder are independent sites, each captured through its own Playwright Page
+        # within the same Chrome (see PropertyCaptureEngine._open_context — connect_over_cdp then
+        # context.new_page(), never a shared Page), so a running dubizzle job has no reason to
+        # block a queued propertyfinder job from starting. Two jobs on the SAME platform still
+        # can't run concurrently — claim_pending_property_job's per-platform WHERE clause plus the
+        # DB's own per-platform partial unique index are what enforce that, this gather() is just
+        # what lets DIFFERENT platforms overlap in the first place.
+        platform_counts = await asyncio.gather(
+            *(
+                _drain_platform_jobs(pool, platform, settings)
+                for platform in cdp_required_platforms()
             )
-            await property_pipeline.run_property_job(pool, job, settings)
-            claimed += 1
+        )
+        claimed += sum(platform_counts)
     finally:
         await pool.close()
 

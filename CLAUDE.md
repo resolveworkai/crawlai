@@ -270,11 +270,114 @@ on this status for a deploy decision.
   `web.whatsapp.com` not `wa.me`, `S`=skip, `Ctrl+Z`=undo via a new `mark-pending` endpoint), all
   three status mutations optimistic for instant advance. Verified live in a real browser against the
   running Docker stack, not just automated tests.
+- **Property Research add-on module (2026-08-22/23, `md/PROPERTY_CRAWL.md`)**: a *third* parallel
+  job type — searches dubizzle.com/propertyfinder.ae for a location + bedroom/bathroom/property-type/
+  ready-or-off-plan filter, captures every listing, scores each as a "distress deal" (best value for
+  money — price-per-sqft + distress-language + freshness + verification), and for the top-N ranked
+  listings reveals a phone number and builds a `wa.me` WhatsApp link. Same DB-as-queue seam as
+  ecom/OCR: `property_jobs`/`property_listings`/`property_logs` (migration `1785300000000`), Node
+  `routes/propertyCrawl.ts` + `db/propertyJobs.ts`/`propertyListings.ts`, Python
+  `business_scout_worker/property/` (own capture engine, own OCR-fallback parser, own scoring — zero
+  imports from `ecom/`/`ocr/`), UI `src/routes/property-crawl.tsx` ("Property Research" nav).
+  **Both platforms are `REQUIRES_CDP`** — dubizzle returns an empty-body 200 and propertyfinder a
+  bare 403 under plain headless Chromium; there is no container-daemon claimant for this module at
+  all, only the operator-run host runner (`run_property_host.py`, `PROPERTY_HOST_WATCH=1` poll loop,
+  default 15s — no `pg_notify`, since there's nothing headless to wake).
+  - **Extraction is `data-testid`-selector-first, regex fallback second** (confirmed live
+    2026-08-22 via the operator's real Chrome over CDP) — this is the PRIMARY, stable path for both
+    adapters (`adapters/dubizzle.py`/`adapters/propertyfinder.py`); the original innerText-regex
+    heuristics (`parse_property.py`, shared by both adapters for whatever a testid selector doesn't
+    find) are now defense-in-depth, not the primary path. Three real bugs found/fixed this way:
+    `BEDROOMS_RE` missed hyphenated forms ("2-Bedroom"/"2-bhk" — no whitespace between digit and
+    label); dubizzle's "WhatsApp" contact-button text was winning as the guessed location
+    (`_UI_ACTION_WORDS` blocklist fixed it); `description` selector matched nothing on the real MUI
+    markup (fixed to `[data-testid="description"]`, and the preceding "Read More" click turned out
+    unnecessary AND actively harmful — a stray promo modal could intercept it and abort the whole
+    extraction block).
+  - **propertyfinder was returning 0 results — two independent, confirmed-live root causes, both
+    fixed (2026-08-22)**: the search path was `/en/search/{purpose}` (a bare 404 on the real site;
+    correct path is `/en/search`, purpose controlled by `fu=0|1`), and the location param was
+    `q=<free text>` (silently ignored — propertyfinder has no free-text location search on this
+    endpoint; the real working param is `l=<numeric id>&t=1`, the id resolved from a public,
+    unauthenticated GET to `{BASE_URL}/b2c-location/api/v1/en/locations` once per job — new adapter
+    hook `resolve_location()` in `adapters/base.py`, called before pagination begins since
+    `search_url()` itself must stay synchronous). Once real results loaded, price/beds/baths came
+    back `None` for the same reason as the description bug above (no "AED"/"Bed"/"bath" text next to
+    a bare number+icon on this site) — fixed via the same testid-first pattern
+    (`property-card-price`/`-spec-bedroom`/`-spec-bathroom`/`-spec-propertyType`/`-location`,
+    confirmed live). Also fixed: the card's first `<img>` was always a lazy-load placeholder (real
+    photos are a placeholder+real-src PAIR per image slot); "Listed N months/years ago" (not just
+    "N days ago") left freshness blank (`parse_property.py`'s `LISTED_AGO_UNIT_RE`, ~30/365 day
+    approximation).
+  - **Ready vs. off-plan filter** (`property_jobs.property_status`, defaults `"ready"` — confirmed
+    preference): no confirmed server-side URL param on either platform, so enforced client-side at
+    capture time (`capture.py`) against each card's own `is_offplan` flag — dubizzle's real
+    `[data-testid="offplan-badge"]` element (presence = off-plan), propertyfinder's badge text
+    containing the literal word "Offplan" (e.g. "Offplan: First Sale") — both confirmed live.
+  - **Detail-page-only fields** (`age_years`/`average_rent`/`listed_date`/`phone_number`/
+    `whatsapp_link`) — populated ONLY for the job's `detail_scrape_top_n` highest-scoring listings,
+    and never fabricated: an off-plan listing genuinely lacking a "Property Age"/"Average Rent" field
+    on the real site stays `null`, not guessed from general knowledge (explicitly declined a request
+    to "look up ages on the internet" — that would attach an unverifiable number to a real listing
+    someone might use to make a buying decision, with no way to tell it apart from a genuine
+    site-sourced value).
+  - **Wishlist, cross-search compare, per-row price refresh + drop highlight (2026-08-23)**:
+    `property_wishlist` (migration `1785600000000`) is a save-for-later **snapshot** at click-time,
+    not a live FK — a job (and its listings, `ON DELETE CASCADE`) can be deleted/re-run at any point,
+    but a saved listing keeps showing what the operator saved; de-duped on `listing_url` (the real
+    site URL — the one stable identity a listing has across separate job runs on different days).
+    Compare-checkbox selection is held in frontend state keyed by listing id, **global across jobs
+    on purpose** — checking a listing while viewing one job's results and then switching to a
+    DIFFERENT job's results (which unmounts the first job's own results array) keeps it comparable,
+    since the full snapshot is held in the selection itself, not re-derived from whichever job is on
+    screen. Per-row "Refresh" re-visits that ONE listing's real URL live (new lightweight
+    `property_listing_refreshes` queue, migration `1785700000000` — same claim pattern as
+    `property_jobs` but far cheaper: no search/pagination, drained by the host runner BEFORE full
+    search jobs every poll cycle, since a refresh is one quick page visit vs. a job that can run for
+    minutes) via each adapter's own confirmed detail-page price selector (dubizzle's
+    `[data-testid="listing-price"]` — confirmed the FIRST DOM match is the listing's own price, a
+    "similar properties" carousel further down the page reuses the same testid but always sorts
+    after it; propertyfinder's `[data-testid="property-price"]`, confirmed unique on the page) and
+    updates the row's price in place. Results are enriched at read time
+    (`listPropertyListingsWithHistory`) with `previous_price`/`price_dropped` — the price the SAME
+    `listing_url` was captured at in the most recent EARLIER job (any day), correlated by a
+    subquery — plus the latest completed refresh's own old/new price; a row highlights green with
+    the old price struck through when either signal shows a genuine drop. **Verified live
+    end-to-end** against the real running stack (not just unit tests): wishlist add/list/dedup/
+    remove, a real refresh claimed+processed by the host runner updating a real row's price, and
+    both the cross-job and refresh-triggered price-drop signals firing correctly (confirmed via
+    direct DB inspection + the real `/results` API response).
+  - **Gotcha hit mid-session**: `git stash`/`git stash pop` on Windows with `core.autocrlf=true`
+    round-trips every touched file through CRLF conversion, which the project's prettier config
+    flags — re-running `eslint --fix` scoped to just the touched files (never a broad
+    `prettier --write .`/`eslint --fix .` across the whole repo — that reformats hundreds of
+    unrelated files) fixes it cleanly, same as any other line-ending drift.
+  - **Per-platform concurrency (2026-08-23)**: dubizzle and propertyfinder now run CONCURRENTLY —
+    a running dubizzle job no longer blocks a queued propertyfinder job (or vice versa) from
+    starting. The old GLOBAL "at most one job running" lock (`ux_property_jobs_single_running`,
+    `UNIQUE ((true)) WHERE status IN (...)`) is narrowed to per-platform (migration
+    `1785800000000`, `UNIQUE (platform) WHERE status IN (...)`) — two jobs on the SAME platform
+    still can't run concurrently (they'd fight over the same site's pagination/rate-limit
+    posture), but one of EACH platform now can. `run_property_host.py`'s single sequential
+    claim-loop was split into one `_drain_platform_jobs()` loop PER platform, launched
+    concurrently via `asyncio.gather` — each connects over CDP independently and opens its OWN
+    Playwright Page within the SAME shared Chrome context (dubizzle.com/propertyfinder.ae are
+    different origins, so cookie/session state never collides). `claim_pending_property_job` gained
+    a required `platform` param (was global); Node's `countQueuedPropertyJobs` likewise (a queued
+    job on the OTHER platform no longer sits "ahead of" this one in any real sense). **Verified
+    live**: two real jobs (one dubizzle, one propertyfinder) queued at the same instant both showed
+    `status='capturing'` simultaneously and their `captured_count`s climbed in lockstep
+    (3-then-2, 8-then-7, 12-then-11...) until both independently reached `ready` at 15/15 — proof
+    they ran as two genuinely separate, concurrent Playwright sessions, not a fast sequential
+    illusion.
 - **Known follow-up, not yet done**: `supabase/` (CLI config + old Lovable-era migrations) is dead
   weight left over from the original scaffold — the real schema is `db/migrations/*.sql` via
   node-pg-migrate. Safe to delete, just hasn't been done. Prod deployment target (which host, TLS
   termination) was never specified — `docker-compose.yml` is the only "prod" config that exists,
-  single-box, plain HTTP.
+  single-box, plain HTTP. **Property Research**: propertyfinder's phone-reveal button selector on
+  the detail page was never independently live-verified (best-effort guess mirroring dubizzle's
+  confirmed pattern); `community` comes back `null` for most listings on both platforms (the UI
+  falls back to `location_text`, which is populated) — a pre-existing gap, not touched this pass.
 
 ## Skills
 
@@ -308,6 +411,7 @@ Every list/single-resource endpoint wraps its payload in a named envelope (`{job
 | `/exports` | `GET /` (history), `POST /` (generate xlsx/csv/json, operator+), `GET /:id/download` |
 | `/api/v1` | `GET /businesses` (api-key auth, rate-limited 120/min/key), `GET /openapi.json` (unauthenticated) |
 | `/ocr-crawl` | `POST /jobs` (operator+, 409 single-flight), `GET /jobs`, `GET /jobs/:id` (+progress), `GET /jobs/:id/results`, `GET /jobs/:id/export?format=csv\|xlsx`, `GET /jobs/:id/images/*splat` (screenshot), `DELETE /jobs/:id` (operator+) |
+| `/property-crawl` | `POST /jobs` (operator+, queues — never rejects), `POST /jobs/:id/retry` (operator+, resumable, capped at 3), `GET /jobs`, `GET /jobs/:id` (+progress), `GET /jobs/:id/results` (price-drop-enriched), `GET /jobs/:id/analysis`, `GET /jobs/:id/export?format=csv\|xlsx\|json`, `GET /jobs/:id/images/*splat` (screenshot), `DELETE /jobs/:id` (operator+), `GET /wishlist`, `POST /wishlist` (operator+), `DELETE /wishlist/:id` (operator+), `POST /listings/:id/refresh` (operator+), `GET /listings/:id/refresh/:refreshId` |
 | `/health` | `GET /` (checks DB) |
 
 ## Project convention — approved-plan archival (REQUIREMENT)

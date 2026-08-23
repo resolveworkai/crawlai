@@ -61,14 +61,20 @@ export async function createPropertyJob(input: {
   return job;
 }
 
-// At most one job may actively run a browser session (capturing/parsing/detail/scoring) at a
-// time — enforced by the partial unique index ux_property_jobs_single_running as the hard
-// guarantee (a GLOBAL lock, not per-platform-group, since every platform here needs CDP and
-// there's only ever one runner — see the migration's header comment). Multiple jobs MAY sit
-// 'queued' simultaneously: a new job is never rejected, just appended to the queue.
-export async function countQueuedPropertyJobs(): Promise<number> {
+// At most one job PER PLATFORM may actively run a browser session (capturing/parsing/detail/
+// scoring) at a time — enforced by the partial unique index
+// ux_property_jobs_single_running_per_platform (2026-08-23: narrowed from a GLOBAL lock to a
+// per-platform one, since dubizzle and propertyfinder are independent sites captured through
+// independent Playwright Pages within the same Chrome — see the migration's header comment and
+// run_property_host.py's per-platform claim loops). Multiple jobs MAY sit 'queued' simultaneously
+// on the SAME platform: a new job is never rejected, just appended to that platform's queue.
+// countQueuedPropertyJobs is scoped to `platform` for the same reason — a queued propertyfinder
+// job no longer sits "ahead of" a dubizzle job in any real sense, so reporting a global count
+// would overstate the actual wait.
+export async function countQueuedPropertyJobs(platform: PropertyPlatform): Promise<number> {
   const { rows } = await pool.query<{ n: string }>(
-    `SELECT count(*)::text AS n FROM property_jobs WHERE status = 'queued'`,
+    `SELECT count(*)::text AS n FROM property_jobs WHERE status = 'queued' AND platform = $1`,
+    [platform],
   );
   return Number(rows[0]?.n ?? 0);
 }

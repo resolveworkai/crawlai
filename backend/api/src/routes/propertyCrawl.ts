@@ -64,8 +64,10 @@ propertyCrawlRouter.post(
   validate(createPropertyJobSchema),
   async (req, res) => {
     const input = req.body as CreatePropertyJobInput;
-    // Position BEFORE this job's own insert — how many are already queued ahead of it.
-    const queuedAhead = await countQueuedPropertyJobs();
+    // Position BEFORE this job's own insert — how many are already queued ahead of it ON THE SAME
+    // PLATFORM (a queued job on the OTHER platform no longer blocks this one — see
+    // countQueuedPropertyJobs's own comment).
+    const queuedAhead = await countQueuedPropertyJobs(input.platform);
     const job = await createPropertyJob({
       createdBy: req.user!.id,
       platform: input.platform,
@@ -109,8 +111,8 @@ propertyCrawlRouter.post(
       );
     }
     // Captured BEFORE the retry's own UPDATE flips this job to 'queued' too, so it reflects jobs
-    // genuinely ahead of it (same ordering as the create-job handler above).
-    const queuedAhead = await countQueuedPropertyJobs();
+    // genuinely ahead of it on the same platform (same ordering as the create-job handler above).
+    const queuedAhead = await countQueuedPropertyJobs(existing.platform);
     const job = await retryPropertyJob(existing.id);
     if (!job) throw new ValidationError("Could not retry — the job's state changed, try again");
     res.status(200).json({ job, queuePosition: queuedAhead });

@@ -133,8 +133,10 @@ const ACTIVE: ReadonlySet<PropertyJobStatus> = new Set([
   "detail",
   "scoring",
 ]);
-// Actually running a browser session — distinct from merely 'queued'. Only one property job is
-// ever RUNNING at a time (server-enforced); any number may be 'queued' behind it.
+// Actually running a browser session — distinct from merely 'queued'. At most one job PER
+// PLATFORM is ever RUNNING at a time (server-enforced, 2026-08-23) — dubizzle and propertyfinder
+// can run concurrently (independent sites, independent Playwright pages), so up to 2 jobs total
+// may show RUNNING at once; any number may be 'queued' behind either.
 const RUNNING: ReadonlySet<PropertyJobStatus> = new Set([
   "capturing",
   "parsing",
@@ -260,9 +262,11 @@ function PropertyCrawl() {
   const [wishlistOpen, setWishlistOpen] = useState(false);
 
   const { data: jobs = [] } = usePropertyJobs();
-  const runningJob = jobs.find((j) => RUNNING.has(j.status));
+  // Up to one RUNNING job per platform now (2026-08-23 — dubizzle/propertyfinder run concurrently,
+  // see RUNNING's own comment) — runningJobs may hold 0, 1, or 2 entries.
+  const runningJobs = jobs.filter((j) => RUNNING.has(j.status));
   const queuedCount = jobs.filter((j) => j.status === "queued").length;
-  const focusId = selectedId ?? runningJob?.id ?? jobs[0]?.id;
+  const focusId = selectedId ?? runningJobs[0]?.id ?? jobs[0]?.id;
   const { data: detail } = usePropertyJob(focusId);
   const focus = detail?.job;
   // A failed/blocked job that still has captured listings (from this or an earlier retry
@@ -563,10 +567,13 @@ function PropertyCrawl() {
           </Button>
         </div>
 
-        {runningJob && (
+        {runningJobs.length > 0 && (
           <p className="mt-2 text-[11px] text-muted-foreground">
-            A job is running now{queuedCount > 0 && ` (${queuedCount} more queued behind it)`} — new
-            jobs queue and auto-run in order, no need to wait.
+            {runningJobs.length === 1
+              ? `${runningJobs[0]!.platform} is running now`
+              : `Running now: ${runningJobs.map((j) => j.platform).join(" + ")} (in parallel)`}
+            {queuedCount > 0 && ` (${queuedCount} more queued behind)`} — new jobs queue and
+            auto-run in order per platform, no need to wait.
           </p>
         )}
       </Card>
