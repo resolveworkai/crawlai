@@ -9,6 +9,7 @@ import { api, fileUrl } from "@/lib/api-client";
 import type {
   PropertyAnalysis,
   PropertyJob,
+  PropertyJobSchedule,
   PropertyListingRefresh,
   PropertyListingWithHistory,
   PropertyPlatform,
@@ -28,6 +29,7 @@ export const propertyKeys = {
   wishlist: () => [...propertyKeys.all, "wishlist"] as const,
   refresh: (listingId: string, refreshId: string) =>
     [...propertyKeys.all, "refresh", listingId, refreshId] as const,
+  schedules: () => [...propertyKeys.all, "schedules"] as const,
 };
 
 interface CreatePropertyJobInput {
@@ -43,6 +45,12 @@ interface CreatePropertyJobInput {
   detailScrapeTopN?: number;
   whatsappMessageTemplate?: string;
   scoreWeights?: PropertyScoreWeights;
+}
+
+// Same shape as CreatePropertyJobInput plus the recurrence interval — mirrors
+// backend/api/src/schemas/propertyCrawl.ts's createPropertyJobScheduleSchema (.extend).
+interface CreatePropertyJobScheduleInput extends CreatePropertyJobInput {
+  intervalHours: number;
 }
 
 // Non-terminal statuses — mirrors property_jobs.status's CHECK constraint.
@@ -217,5 +225,55 @@ export function useListingRefreshStatus(
     enabled: listingId !== undefined && refreshId !== undefined,
     refetchInterval: (query) =>
       query.state.data && !REFRESH_TERMINAL.has(query.state.data.refresh.status) ? 2_000 : false,
+  });
+}
+
+// --- Recurring search (schedule) -------------------------------------------------------------
+// Fired server-side every 5 minutes by backend/api/src/services/propertyScheduler.ts — the
+// frontend only ever CRUDs the schedule row itself, never triggers a run directly.
+
+export function usePropertyJobSchedules() {
+  return useQuery({
+    queryKey: propertyKeys.schedules(),
+    queryFn: async () =>
+      (await api.get<{ schedules: PropertyJobSchedule[] }>("/property-crawl/schedules")).schedules,
+    // Slow poll — next_run_at/last_run_at only change on a 5-minute server tick, so anything
+    // faster is pure waste. Refreshing at all (rather than not polling) keeps "next run" times
+    // and a just-fired schedule's job link visibly up to date without a manual page reload.
+    refetchInterval: 30_000,
+  });
+}
+
+export function useCreatePropertyJobSchedule() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (input: CreatePropertyJobScheduleInput) =>
+      api.post<{ schedule: PropertyJobSchedule }>("/property-crawl/schedules", input),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: propertyKeys.schedules() });
+    },
+  });
+}
+
+export function useSetPropertyJobScheduleEnabled() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, enabled }: { id: string; enabled: boolean }) =>
+      api.patch<{ schedule: PropertyJobSchedule }>(`/property-crawl/schedules/${id}/enabled`, {
+        enabled,
+      }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: propertyKeys.schedules() });
+    },
+  });
+}
+
+export function useDeletePropertyJobSchedule() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.delete<void>(`/property-crawl/schedules/${id}`),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: propertyKeys.schedules() });
+    },
   });
 }

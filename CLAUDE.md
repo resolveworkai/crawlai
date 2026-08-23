@@ -422,6 +422,41 @@ on this status for a deploy decision.
     the whole app fresh on every case, and that import graph has grown enough across this
     project's life that it started genuinely exceeding vitest's 5s default under full-suite load.
     Not a race to chase; if it flakes again, the app has grown further and the fix is the same.
+- **Recurring searches — Property Research scheduling (2026-08-23, `property_job_schedules`)**: a
+  saved search (same criteria shape as `createPropertyJobSchema`, plus `intervalHours` 6–720) that
+  re-fires itself automatically — the use case is a daily re-check of the same area, so the price-
+  drop highlighting (`property_listing_refreshes` / `listing_url`-matched `previous_price`) has
+  fresh data to compare against without a human re-launching the search every day.
+  - **No new dependency, no cron.** `backend/api/src/server.ts` gained a THIRD boot+fixed-interval
+    sweep (same pattern as the export/OCR retention sweeps already there) — every 5 minutes,
+    `services/propertyScheduler.ts`'s `runDuePropertySchedules()` selects every `enabled` schedule
+    whose `next_run_at <= now()`, calls the existing `createPropertyJob()` for each (identical to a
+    human clicking Launch), and advances `next_run_at = now() + interval_hours`. The Python host
+    runner needs ZERO changes — a schedule-created job is a completely ordinary `property_jobs` row,
+    indistinguishable from a manually-launched one once it lands in the queue.
+  - **Concurrency is an in-process flag, not a DB lock, and that's deliberate.** An earlier draft
+    tried `FOR UPDATE SKIP LOCKED` inside `listDuePropertyJobSchedules()` to "claim" due rows —
+    wrong, because each standalone `pool.query()` call auto-commits its own implicit transaction in
+    `pg`, so the row lock is released before it could ever protect anything across calls. Fixed by
+    dropping the DB-level claim entirely (`listDuePropertyJobSchedules` is now a plain `SELECT`) and
+    relying on a `running` boolean inside `propertyScheduler.ts` — correct because this is a single
+    Node process with one `setInterval` timer, not a multi-instance deployment. If this API ever
+    runs as more than one process, this guard stops being sufficient and needs a real distributed
+    lock (e.g. `pg_try_advisory_lock`).
+  - **`property_job_schedules.created_by` is nullable** (`ON DELETE SET NULL`, since a schedule can
+    outlive the user who created it) — `createPropertyJob()`'s `createdBy` param was widened from
+    required `string` to `string | null` to match the real DB column nullability rather than papering
+    over it with a fake `""` value (which would have violated `property_jobs.created_by`'s own FK on
+    the next schedule fire).
+  - **Frontend**: `usePropertyJobSchedules()`/`useCreatePropertyJobSchedule()`/
+    `useSetPropertyJobScheduleEnabled()`/`useDeletePropertyJobSchedule()` in `usePropertyCrawl.ts`;
+    `property-crawl.tsx` gained a "Repeat every ___ hours" input + "Save as recurring" button next to
+    the existing Launch button (reuses every field already filled into the create-job form — no
+    separate schedule-creation form), and a collapsible "Scheduled Searches" panel (same pattern as
+    the existing WishlistPanel) listing each schedule's platform/location/filters/interval/next-run
+    countdown/last-fired time, with a `Switch` to pause/resume (`enabled=false` just stops it from
+    ever being selected as due; toggling back to `true` sets `next_run_at = now()` so it fires on the
+    very next 5-minute tick rather than waiting out its original interval) and a delete button.
 - **Known follow-up, not yet done**: `supabase/` (CLI config + old Lovable-era migrations) is dead
   weight left over from the original scaffold — the real schema is `db/migrations/*.sql` via
   node-pg-migrate. Safe to delete, just hasn't been done. Prod deployment target (which host, TLS

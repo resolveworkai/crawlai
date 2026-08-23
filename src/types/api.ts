@@ -488,6 +488,32 @@ export interface PropertyListingRefresh {
   completed_at: string | null;
 }
 
+// Mirrors backend/api/src/types/db.ts's PropertyJobSchedule — a saved recurring search. Timestamp
+// columns arrive as ISO strings over JSON (the backend type has them as Date, since pg returns
+// real Date objects; JSON.stringify serializes those to strings before they ever reach the client).
+export interface PropertyJobSchedule {
+  id: string;
+  created_by: string | null;
+  platform: PropertyPlatform;
+  location: string;
+  bedrooms: number | null;
+  bathrooms: number | null;
+  property_type: PropertyType;
+  purpose: PropertyPurpose;
+  property_status: PropertyStatus;
+  max_pages: number;
+  max_listings: number;
+  detail_scrape_top_n: number;
+  whatsapp_message_template: string | null;
+  score_weights: PropertyScoreWeights | null;
+  interval_hours: number;
+  enabled: boolean;
+  next_run_at: string;
+  last_run_at: string | null;
+  last_run_job_id: string | null;
+  created_at: string;
+}
+
 // PropertyListing enriched with the cross-job/day price-drop signal (previous_price/price_dropped)
 // plus the most recent completed manual refresh, if any — see backend/api/src/db/
 // propertyListings.ts's listPropertyListingsWithHistory, which is what /results now returns.

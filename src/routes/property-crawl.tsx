@@ -35,6 +35,7 @@ import {
   CommandList,
 } from "@/components/ui/command";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Switch } from "@/components/ui/switch";
 import { RequireAuth } from "@/components/require-auth";
 import { RunnerStatusBanner } from "@/components/runner-status-banner";
 import {
@@ -43,16 +44,20 @@ import {
   propertyKeys,
   useAddToWishlist,
   useCreatePropertyJob,
+  useCreatePropertyJobSchedule,
   useDeletePropertyJob,
+  useDeletePropertyJobSchedule,
   useListingRefreshStatus,
   usePropertyAnalysis,
   usePropertyJob,
   usePropertyJobs,
+  usePropertyJobSchedules,
   usePropertyResults,
   usePropertyWishlist,
   useRefreshListing,
   useRemoveFromWishlist,
   useRetryPropertyJob,
+  useSetPropertyJobScheduleEnabled,
 } from "@/hooks/usePropertyCrawl";
 import { useGeocodeSuggestions } from "@/hooks/useGeocode";
 import { timeAgo } from "@/lib/utils";
@@ -60,6 +65,7 @@ import {
   AlertTriangle,
   Bath,
   Bed,
+  CalendarClock,
   ChevronDown,
   Download,
   ExternalLink,
@@ -84,6 +90,7 @@ import { toast } from "sonner";
 import type {
   GeocodeResult,
   PropertyJob,
+  PropertyJobSchedule,
   PropertyJobStatus,
   PropertyListingWithHistory,
   PropertyPlatform,
@@ -265,6 +272,10 @@ function PropertyCrawl() {
   );
   const [compareOpen, setCompareOpen] = useState(false);
   const [wishlistOpen, setWishlistOpen] = useState(false);
+  const [schedulesOpen, setSchedulesOpen] = useState(false);
+  // 24h default — a daily re-check is the use case the user described ("fetching the same area
+  // listing on daily basis"); the field stays editable per-schedule.
+  const [scheduleIntervalHours, setScheduleIntervalHours] = useState(24);
 
   const { data: jobs = [] } = usePropertyJobs();
   // Up to one RUNNING job per platform now (2026-08-23 — dubizzle/propertyfinder run concurrently,
@@ -285,6 +296,9 @@ function PropertyCrawl() {
   const createJob = useCreatePropertyJob();
   const deleteJob = useDeletePropertyJob();
   const retryJob = useRetryPropertyJob();
+
+  const { data: schedules = [] } = usePropertyJobSchedules();
+  const createSchedule = useCreatePropertyJobSchedule();
 
   const { data: wishlist = [] } = usePropertyWishlist();
   // Membership keyed by listing_url — the wishlist's own real, stable identity (see
@@ -379,6 +393,38 @@ function PropertyCrawl() {
               : `Property search launched for "${location}"`,
           );
           setSelectedId(job.id);
+        },
+        onError: (err) => toast.error(err.message),
+      },
+    );
+  }
+
+  function handleSaveSchedule() {
+    if (location.trim() === "") {
+      toast.error("Enter a location (e.g. JVC, Dubai Marina, Al Barsha)");
+      return;
+    }
+    createSchedule.mutate(
+      {
+        platform,
+        location: location.trim(),
+        propertyType,
+        bedrooms: bedrooms === "any" ? undefined : Number(bedrooms),
+        bathrooms: bathrooms === "any" ? undefined : Number(bathrooms),
+        purpose,
+        propertyStatus,
+        maxPages,
+        maxListings,
+        detailScrapeTopN,
+        whatsappMessageTemplate: whatsappTemplate.trim() || undefined,
+        intervalHours: scheduleIntervalHours,
+      },
+      {
+        onSuccess: () => {
+          toast.success(
+            `Saved — will re-run every ${scheduleIntervalHours}h for "${location.trim()}"`,
+          );
+          setSchedulesOpen(true);
         },
         onError: (err) => toast.error(err.message),
       },
@@ -574,7 +620,29 @@ function PropertyCrawl() {
           </CollapsibleContent>
         </Collapsible>
 
-        <div className="mt-3 flex items-center justify-end">
+        <div className="mt-3 flex flex-wrap items-center justify-end gap-2">
+          <label className="text-xs text-muted-foreground">Repeat every</label>
+          <Input
+            type="number"
+            min={6}
+            max={720}
+            value={scheduleIntervalHours}
+            onChange={(e) =>
+              setScheduleIntervalHours(Math.min(720, Math.max(6, Number(e.target.value) || 6)))
+            }
+            className="h-9 w-20 bg-input"
+            title="Recurrence interval in hours (6–720)"
+          />
+          <span className="text-xs text-muted-foreground">hours</span>
+          <Button
+            variant="outline"
+            className="gap-1.5"
+            disabled={createSchedule.isPending}
+            onClick={handleSaveSchedule}
+          >
+            <CalendarClock className="h-3.5 w-3.5" />
+            Save as recurring
+          </Button>
           <Button className="gap-1.5" disabled={createJob.isPending} onClick={handleLaunch}>
             <Home className="h-3.5 w-3.5" />
             Launch
@@ -592,7 +660,7 @@ function PropertyCrawl() {
         )}
       </Card>
 
-      <div className="mt-4 flex items-center justify-between">
+      <div className="mt-4 flex flex-wrap items-center gap-4">
         <button
           onClick={() => setWishlistOpen((v) => !v)}
           className="flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground"
@@ -605,8 +673,21 @@ function PropertyCrawl() {
             className={`h-3.5 w-3.5 transition-transform ${wishlistOpen ? "rotate-180" : ""}`}
           />
         </button>
+        <button
+          onClick={() => setSchedulesOpen((v) => !v)}
+          className="flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground"
+        >
+          <CalendarClock
+            className={`h-4 w-4 ${schedules.some((s) => s.enabled) ? "text-primary" : ""}`}
+          />
+          Scheduled Searches{schedules.length > 0 ? ` (${schedules.length})` : ""}
+          <ChevronDown
+            className={`h-3.5 w-3.5 transition-transform ${schedulesOpen ? "rotate-180" : ""}`}
+          />
+        </button>
       </div>
       {wishlistOpen && <WishlistPanel />}
+      {schedulesOpen && <SchedulesPanel />}
 
       {focus && (
         <Card className="mt-4 border-border bg-card p-5">
@@ -1504,6 +1585,107 @@ function WishlistPanel() {
                   }
                   disabled={removeItem.isPending}
                   title="Remove from wishlist"
+                >
+                  <Trash2 className="h-3.5 w-3.5 text-muted-foreground hover:text-destructive" />
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </Card>
+  );
+}
+
+// Same shape/logic as jobFilterSummary above, just against a PropertyJobSchedule's own field
+// names — kept as a separate tiny function rather than genericizing jobFilterSummary, since the
+// two types only coincidentally share these 5 field names today and a future divergence
+// shouldn't force either call site to fight a shared signature.
+function scheduleFilterSummary(s: PropertyJobSchedule): string {
+  const parts: string[] = [
+    s.property_type,
+    s.purpose,
+    s.bedrooms !== null ? (s.bedrooms === 0 ? "Studio" : `${s.bedrooms}BR`) : null,
+    s.bathrooms !== null ? `${s.bathrooms} bath` : null,
+    s.property_status !== "any"
+      ? s.property_status === "ready"
+        ? "ready only"
+        : "off-plan only"
+      : null,
+  ].filter((p): p is string => p !== null);
+  return parts.join(" · ");
+}
+
+function hoursUntil(iso: string): string {
+  const ms = new Date(iso).getTime() - Date.now();
+  if (ms <= 0) return "due now";
+  const hours = Math.round(ms / 3_600_000);
+  if (hours < 1) return "in <1h";
+  if (hours < 24) return `in ${hours}h`;
+  return `in ${Math.round(hours / 24)}d`;
+}
+
+// Recurring searches — checked server-side every 5 minutes (services/propertyScheduler.ts) and
+// materialized into a real property_jobs row when due, no different from clicking Launch by hand.
+function SchedulesPanel() {
+  const { data: schedules = [], isLoading } = usePropertyJobSchedules();
+  const setEnabled = useSetPropertyJobScheduleEnabled();
+  const deleteSchedule = useDeletePropertyJobSchedule();
+
+  return (
+    <Card className="mt-2 border-border bg-card p-4">
+      {isLoading && <p className="text-xs text-muted-foreground">Loading…</p>}
+      {!isLoading && schedules.length === 0 && (
+        <p className="text-xs text-muted-foreground">
+          No recurring searches yet — set a location/filters above and click "Save as recurring" to
+          have it re-run automatically (e.g. daily, to catch new listings and price drops).
+        </p>
+      )}
+      {schedules.length > 0 && (
+        <div className="grid gap-2">
+          {schedules.map((s) => (
+            <div
+              key={s.id}
+              className="flex items-center justify-between gap-3 rounded border border-border px-3 py-2 text-xs"
+            >
+              <div className="min-w-0 flex-1">
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <span className="truncate font-medium" title={s.location}>
+                    {s.location}
+                  </span>
+                  <span className="shrink-0 rounded bg-muted px-1 text-[9px] uppercase text-muted-foreground">
+                    {s.platform}
+                  </span>
+                  <span className="shrink-0 text-[10px] text-muted-foreground">
+                    every {s.interval_hours}h
+                  </span>
+                </div>
+                <div className="mt-0.5 text-[11px] text-muted-foreground">
+                  {scheduleFilterSummary(s)}
+                </div>
+                <div className="mt-0.5 text-[11px] text-muted-foreground">
+                  {s.enabled ? `Next run ${hoursUntil(s.next_run_at)}` : "Paused"}
+                  {s.last_run_at && ` · last fired ${timeAgo(s.last_run_at)}`}
+                </div>
+              </div>
+              <div className="flex shrink-0 items-center gap-3">
+                <Switch
+                  checked={s.enabled}
+                  onCheckedChange={(checked) =>
+                    setEnabled.mutate(
+                      { id: s.id, enabled: checked },
+                      { onError: (e) => toast.error(e.message) },
+                    )
+                  }
+                  disabled={setEnabled.isPending}
+                  title={s.enabled ? "Pause this schedule" : "Resume this schedule"}
+                />
+                <button
+                  onClick={() =>
+                    deleteSchedule.mutate(s.id, { onError: (e) => toast.error(e.message) })
+                  }
+                  disabled={deleteSchedule.isPending}
+                  title="Delete this schedule"
                 >
                   <Trash2 className="h-3.5 w-3.5 text-muted-foreground hover:text-destructive" />
                 </button>

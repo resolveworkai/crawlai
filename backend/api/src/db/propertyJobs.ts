@@ -18,7 +18,10 @@ import type {
 } from "../types/db.js";
 
 export async function createPropertyJob(input: {
-  createdBy: string;
+  // Nullable so a scheduled job (services/propertyScheduler.ts) can still fire correctly even if
+  // the schedule's own creator was since deleted (property_job_schedules.created_by is
+  // ON DELETE SET NULL) — the DB column itself is nullable, this type now matches it exactly.
+  createdBy: string | null;
   platform: PropertyPlatform;
   location: string;
   bedrooms?: number | undefined;

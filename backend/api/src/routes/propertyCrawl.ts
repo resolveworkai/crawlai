@@ -20,12 +20,16 @@ import { validate } from "../middleware/validate.js";
 import {
   addToWishlistSchema,
   createPropertyJobSchema,
+  createPropertyJobScheduleSchema,
   listingRefreshStatusParamsSchema,
   propertyExportQuerySchema,
   propertyJobIdParamsSchema,
+  propertyJobScheduleIdParamsSchema,
+  setPropertyJobScheduleEnabledSchema,
   wishlistItemIdParamsSchema,
   type AddToWishlistInput,
   type CreatePropertyJobInput,
+  type CreatePropertyJobScheduleInput,
 } from "../schemas/propertyCrawl.js";
 import {
   countQueuedPropertyJobs,
@@ -36,6 +40,12 @@ import {
   MAX_PROPERTY_RETRIES,
   retryPropertyJob,
 } from "../db/propertyJobs.js";
+import {
+  createPropertyJobSchedule,
+  deletePropertyJobSchedule,
+  listPropertyJobSchedules,
+  setPropertyJobScheduleEnabled,
+} from "../db/propertyJobSchedules.js";
 import {
   findPropertyListingWithPlatform,
   listPropertyListingsWithHistory,
@@ -307,6 +317,69 @@ propertyCrawlRouter.delete(
   async (req, res) => {
     const removed = await removeFromWishlist(req.params.id as string);
     if (!removed) throw new NotFoundError("Wishlist item not found");
+    res.status(204).send();
+  },
+);
+
+// --- Recurring search (schedule) -----------------------------------------------------------------
+// A schedule holds the same criteria a one-off job would, plus a recurrence interval — Node's own
+// scheduler tick (services/propertyScheduler.ts) creates a real property_jobs row when due; the
+// host runner never knows a schedule exists.
+
+propertyCrawlRouter.post(
+  "/property-crawl/schedules",
+  requireAuth,
+  requireRole("operator"),
+  validate(createPropertyJobScheduleSchema),
+  async (req, res) => {
+    const input = req.body as CreatePropertyJobScheduleInput;
+    const schedule = await createPropertyJobSchedule({
+      createdBy: req.user!.id,
+      platform: input.platform,
+      location: input.location,
+      bedrooms: input.bedrooms,
+      bathrooms: input.bathrooms,
+      propertyType: input.propertyType,
+      purpose: input.purpose,
+      propertyStatus: input.propertyStatus,
+      maxPages: input.maxPages,
+      maxListings: input.maxListings,
+      detailScrapeTopN: input.detailScrapeTopN,
+      whatsappMessageTemplate: input.whatsappMessageTemplate,
+      scoreWeights: input.scoreWeights,
+      intervalHours: input.intervalHours,
+    });
+    res.status(201).json({ schedule });
+  },
+);
+
+propertyCrawlRouter.get("/property-crawl/schedules", requireAuth, async (_req, res) => {
+  const schedules = await listPropertyJobSchedules();
+  res.json({ schedules });
+});
+
+propertyCrawlRouter.patch(
+  "/property-crawl/schedules/:id/enabled",
+  requireAuth,
+  requireRole("operator"),
+  validate(propertyJobScheduleIdParamsSchema, "params"),
+  validate(setPropertyJobScheduleEnabledSchema),
+  async (req, res) => {
+    const { enabled } = req.body as { enabled: boolean };
+    const schedule = await setPropertyJobScheduleEnabled(req.params.id as string, enabled);
+    if (!schedule) throw new NotFoundError("Schedule not found");
+    res.json({ schedule });
+  },
+);
+
+propertyCrawlRouter.delete(
+  "/property-crawl/schedules/:id",
+  requireAuth,
+  requireRole("operator"),
+  validate(propertyJobScheduleIdParamsSchema, "params"),
+  async (req, res) => {
+    const removed = await deletePropertyJobSchedule(req.params.id as string);
+    if (!removed) throw new NotFoundError("Schedule not found");
     res.status(204).send();
   },
 );

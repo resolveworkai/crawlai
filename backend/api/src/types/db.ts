@@ -413,6 +413,33 @@ export interface PropertyJob {
   finished_at: Date | null;
 }
 
+// Recurring re-run of a saved search (2026-08-23, migration 1786000000000) — the same criteria a
+// one-off PropertyJob would take, plus a recurrence interval. Node's own scheduler tick
+// (services/propertyScheduler.ts) creates a real PropertyJob when due; the host runner never
+// knows a schedule exists, it just picks up the resulting job like any other.
+export interface PropertyJobSchedule {
+  id: string;
+  created_by: string | null;
+  platform: PropertyPlatform;
+  location: string;
+  bedrooms: number | null;
+  bathrooms: number | null;
+  property_type: PropertyType;
+  purpose: PropertyPurpose;
+  property_status: PropertyStatus;
+  max_pages: number;
+  max_listings: number;
+  detail_scrape_top_n: number;
+  whatsapp_message_template: string | null;
+  score_weights: PropertyScoreWeights | null;
+  interval_hours: number;
+  enabled: boolean;
+  next_run_at: Date;
+  last_run_at: Date | null;
+  last_run_job_id: string | null;
+  created_at: Date;
+}
+
 export type PropertyExtractionSource = "dom" | "dom+ocr" | "ocr";
 
 export interface PropertyListing {

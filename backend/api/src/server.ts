@@ -5,6 +5,7 @@ import { logger } from "./logger.js";
 import { pool } from "./db/pool.js";
 import { cleanupExpiredExports } from "./services/exportService.js";
 import { purgeExpiredOcrCaptures } from "./lib/ocrRetention.js";
+import { runDuePropertySchedules } from "./services/propertyScheduler.js";
 
 const app = createApp();
 
@@ -51,10 +52,25 @@ function runOcrCleanup(): void {
 runOcrCleanup();
 const ocrCleanupTimer = setInterval(runOcrCleanup, OCR_CLEANUP_INTERVAL_MS);
 
+// Property Research recurring searches (2026-08-23) — checked every 5 minutes, which bounds how
+// late a due schedule can fire to at most that long past its next_run_at. Cheap (one SELECT when
+// nothing's due), same boot + fixed-interval pattern as the sweeps above.
+const PROPERTY_SCHEDULE_INTERVAL_MS = 5 * 60 * 1000;
+
+function runPropertySchedules(): void {
+  runDuePropertySchedules().catch((err: unknown) => {
+    logger.error({ err }, "property schedule tick failed");
+  });
+}
+
+runPropertySchedules();
+const propertyScheduleTimer = setInterval(runPropertySchedules, PROPERTY_SCHEDULE_INTERVAL_MS);
+
 async function shutdown(signal: string): Promise<void> {
   logger.info({ signal }, "shutting down");
   clearInterval(exportCleanupTimer);
   clearInterval(ocrCleanupTimer);
+  clearInterval(propertyScheduleTimer);
   server.close(() => {
     void pool.end().finally(() => process.exit(0));
   });

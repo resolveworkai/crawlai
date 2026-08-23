@@ -67,3 +67,20 @@ export const listingRefreshStatusParamsSchema = z.object({
   id: z.string().uuid(),
   refreshId: z.string().uuid(),
 });
+
+// --- Recurring search (schedule) -----------------------------------------------------------------
+// Same criteria fields as createPropertyJobSchema, extended with a recurrence interval — reuses
+// that schema (.extend) rather than duplicating every field's own validation.
+
+export const createPropertyJobScheduleSchema = createPropertyJobSchema.extend({
+  // 6h floor — this is a recurring background job, not a one-off; anything tighter risks
+  // overlapping the previous run's own capture time for a large search. 30 days ceiling — beyond
+  // that, just relaunch manually; a schedule this infrequent isn't really "recurring" in practice.
+  intervalHours: z.coerce.number().int().min(6).max(720),
+});
+
+export type CreatePropertyJobScheduleInput = z.infer<typeof createPropertyJobScheduleSchema>;
+
+export const propertyJobScheduleIdParamsSchema = z.object({ id: z.string().uuid() });
+
+export const setPropertyJobScheduleEnabledSchema = z.object({ enabled: z.boolean() });
