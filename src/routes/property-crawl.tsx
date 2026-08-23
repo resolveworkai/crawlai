@@ -71,6 +71,7 @@ import {
   MessageCircle,
   RefreshCw,
   Ruler,
+  Search,
   RotateCcw,
   ShieldCheck,
   TrendingDown,
@@ -249,6 +250,9 @@ function PropertyCrawl() {
   const [communityFilter, setCommunityFilter] = useState<Set<string>>(new Set());
   const [sqftMin, setSqftMin] = useState("");
   const [sqftMax, setSqftMax] = useState("");
+  // Free-text search against the Listing column's own visible content (title, community/
+  // location_text, building name) — a plain substring match, case-insensitive.
+  const [searchQuery, setSearchQuery] = useState("");
 
   // Compare selection — deliberately GLOBAL (not scoped to the currently-focused job): stores the
   // full listing snapshot, keyed by listing id, so a listing checked while viewing one job's
@@ -307,6 +311,7 @@ function PropertyCrawl() {
   const filtered = useMemo(() => {
     const min = sqftMin.trim() === "" ? null : Number(sqftMin);
     const max = sqftMax.trim() === "" ? null : Number(sqftMax);
+    const query = searchQuery.trim().toLowerCase();
     return results.filter((l) => {
       if (communityFilter.size > 0) {
         const c = l.community ?? l.location_text;
@@ -320,9 +325,16 @@ function PropertyCrawl() {
         const area = num(l.area_sqft);
         if (area === null || area > max) return false;
       }
+      if (query !== "") {
+        const haystack = [l.title, l.community, l.location_text]
+          .filter((v): v is string => v !== null)
+          .join(" ")
+          .toLowerCase();
+        if (!haystack.includes(query)) return false;
+      }
       return true;
     });
-  }, [results, communityFilter, sqftMin, sqftMax]);
+  }, [results, communityFilter, sqftMin, sqftMax, searchQuery]);
 
   const sorted = useMemo(() => {
     const rows = [...filtered];
@@ -740,6 +752,15 @@ function PropertyCrawl() {
           {showResults && (
             <div className="mt-3 flex flex-wrap items-center gap-2">
               <span className="text-[11px] text-muted-foreground">Filter</span>
+              <div className="relative">
+                <Search className="pointer-events-none absolute left-2 top-1/2 h-3 w-3 -translate-y-1/2 text-muted-foreground" />
+                <Input
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  placeholder="Search listing, building, community…"
+                  className="h-8 w-56 bg-input pl-7 text-xs"
+                />
+              </div>
               <CommunityMultiSelect
                 options={availableCommunities}
                 selected={communityFilter}
@@ -760,10 +781,14 @@ function PropertyCrawl() {
                 placeholder="Max sqft"
                 className="h-8 w-24 bg-input text-xs"
               />
-              {(communityFilter.size > 0 || sqftMin.trim() !== "" || sqftMax.trim() !== "") && (
+              {(searchQuery.trim() !== "" ||
+                communityFilter.size > 0 ||
+                sqftMin.trim() !== "" ||
+                sqftMax.trim() !== "") && (
                 <>
                   <button
                     onClick={() => {
+                      setSearchQuery("");
                       setCommunityFilter(new Set());
                       setSqftMin("");
                       setSqftMax("");
