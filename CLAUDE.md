@@ -631,6 +631,49 @@ on this status for a deploy decision.
   UI. Verified live: a job created via a direct API call with `maxPages` omitted now gets
   `max_pages: 20`. The field's own 1–20 range cap was already 20, so this makes the default equal
   the ceiling rather than raising the ceiling itself.
+- **CRITICAL — propertyfinder starved indefinitely by a busy dubizzle queue (2026-08-24 fix,
+  `run_property_host.py`)**: reported live as "property finder is not working at all" — a real
+  job sat QUEUED for 50+ minutes with zero activity. Root-caused via the runner's own log: it
+  never mentioned "propertyfinder" ONCE in that whole window, while dubizzle jobs processed one
+  after another back-to-back the entire time. The bug was in the 2026-08-23 "run platforms
+  concurrently" design (see rule above it): each `_run()` watch-cycle called
+  `asyncio.gather(*(_drain_platform_jobs(platform) for platform in [...]))`, and each
+  `_drain_platform_jobs` call was "claim+run everything queued for this platform RIGHT NOW, then
+  return." `asyncio.gather` doesn't return until EVERY one of its coroutines returns — so as long
+  as dubizzle kept finding more work (new jobs kept arriving faster than it could drain them),
+  its own drain-loop never returned, `gather()` never resolved, and the outer watch loop never got
+  to call `_run()` again — meaning propertyfinder's drain-loop, which had already checked ONCE at
+  the very start (found nothing queued at that exact instant, returned immediately), was never
+  RE-CREATED to notice the propertyfinder jobs queued moments later. The two platforms WERE running
+  concurrently within a single cycle — the bug was that a busy platform could prevent the NEXT
+  cycle (and thus a fresh check of every platform, including an idle one) from ever starting.
+  - **Fix**: replaced the "re-created every outer cycle" design with genuinely PERSISTENT,
+    independent loops — `_drain_platform_forever(platform)`, one per platform, started ONCE and
+    running for the life of the process (immediately re-checks its own queue after finishing a
+    job, or sleeps `poll_seconds` if empty) — plus a separate `_housekeeping_forever` loop
+    (heartbeat + refresh-draining, also persistent). All started together via one `asyncio.gather`
+    that itself never returns (every child loop is `while True`), so there's no outer cycle left
+    to get stuck waiting on a busy platform in the first place.
+  - **Orphan recovery moved to a true one-time call** (`recover_orphaned_property_jobs()` — marks
+    EVERY row currently `capturing`/`parsing`/`detail`/`scoring` as failed, unconditionally) —
+    this MUST run exactly once, before any persistent loop starts claiming, never on a repeating
+    interval; the old design got this right only because `_run()` itself was re-invoked fresh
+    each cycle. `_housekeeping_forever` deliberately does NOT call it — calling it on a repeating
+    interval would kill every legitimately-still-running job within one poll tick, a much worse
+    bug than the one being fixed.
+  - The one-shot `PROPERTY_HOST_WATCH` unset path (`_run()`/`_drain_platform_jobs`, "drain what's
+    queued right now, then exit" — used for a single CI-style invocation) is UNCHANGED — the
+    starvation bug only applies to the long-running watch loop, since it needs new work to keep
+    arriving faster than a platform drains to manifest at all.
+  - **Live-verified against the real running host runner**: confirmed via the DB that 3 real
+    propertyfinder jobs had been queued 09:08–09:50 with zero progress, and via the runner's raw
+    log that it never mentioned propertyfinder once since its last start. Restarted the runner
+    with the fix (killed only its own 2 PIDs by exact CommandLine match, never a blanket kill —
+    same discipline as every other restart this session); confirmed the one-time orphan-recovery
+    fired exactly once (`{"count": 1, "event": "recovered orphaned property jobs"}`) and,
+    critically, that propertyfinder was claimed within SECONDS of restart — concurrently with an
+    already-running dubizzle job — and was genuinely capturing real listings
+    ("The Diamond, Dubai Sports City, Dubai"), not just marked as claimed.
 - **Known follow-up, not yet done**: `supabase/` (CLI config + old Lovable-era migrations) is dead
   weight left over from the original scaffold — the real schema is `db/migrations/*.sql` via
   node-pg-migrate. Safe to delete, just hasn't been done. Prod deployment target (which host, TLS
