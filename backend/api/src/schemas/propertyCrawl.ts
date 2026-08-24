@@ -51,6 +51,13 @@ export const propertyExportQuerySchema = z.object({
   format: z.enum(["csv", "xlsx", "json"]).default("csv"),
 });
 
+// --- Global search (search every captured listing by tower/community/location name) -----------
+
+export const searchPropertyListingsQuerySchema = z.object({
+  q: z.string().trim().min(2).max(200),
+  limit: z.coerce.number().int().min(1).max(100).default(50),
+});
+
 // --- Wishlist (save-for-later) ---------------------------------------------------------------
 
 export const addToWishlistSchema = z.object({

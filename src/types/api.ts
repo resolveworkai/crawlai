@@ -537,6 +537,14 @@ export interface PropertyListingWithHistory extends PropertyListing {
   possible_duplicate: PropertyPossibleDuplicate | null;
 }
 
+// A PropertyListingWithHistory PLUS which job/platform/search it was captured under — only
+// GET /property-crawl/search returns this shape, since results there span MULTIPLE jobs (every
+// other results view is already scoped to one job, so platform/location come from that job).
+export interface PropertySearchResult extends PropertyListingWithHistory {
+  platform: PropertyPlatform;
+  job_location: string;
+}
+
 export interface PropertyAnalysisSummary {
   listingCount: number;
   needsReviewCount: number;

@@ -575,6 +575,41 @@ on this status for a deploy decision.
     silently claimed complete; the underlying `createPropertyJob` call Refresh Search reuses has
     already been live-verified multiple times elsewhere in this same session (Launch, Save as
     recurring), so its correctness is high-confidence even without a fresh click-through.
+- **Global search by tower/building name (2026-08-24)**: search across EVERY captured listing —
+  not scoped to one job — matched against title/community/location_text (a tower name usually
+  shows up in one of those, e.g. "Sports View Residence, International City Phase 2 (Warsan 4),
+  Dubai" as either the title or, for some listings, only `location_text` while the title itself is
+  a generic ad blurb). Distinct from the existing per-job free-text filter (client-side, scoped to
+  whichever job is currently open) — this is a NEW backend endpoint since it queries across jobs.
+  - **Backend**: `GET /property-crawl/search?q=&limit=` (`searchPropertyListingsQuerySchema`, q
+    min 2 chars, limit 1-100 default 50) → `searchPropertyListingsGlobally()`
+    (`propertyListings.ts`). Refactored the three enrichment subqueries (previous_price/
+    latest_refresh/possible_duplicate) that `listPropertyListingsWithHistory` already had into a
+    shared `HISTORY_ENRICHMENT_SQL` string fragment + a shared `toListingWithHistory()` mapper —
+    both the per-job view and this new global-search view interpolate the SAME fragment, so a
+    listing's price-drop/duplicate signal can never read differently depending on which endpoint
+    happened to fetch it. The new query additionally selects `cur_job.platform`/`cur_job.location`
+    (a `PropertySearchResult` extends `PropertyListingWithHistory` with these two fields) since
+    results span multiple jobs — every other view can infer platform/location from "whichever job
+    is currently open," this one can't.
+  - **Frontend**: a "Global Search" toolbar button (next to Wishlist/Scheduled Searches) opens a
+    self-contained `GlobalSearchModal` — own query input + debounce, not synced with any toolbar
+    state, matching this file's existing self-contained-panel convention (WishlistPanel/
+    CompareModal). Results render as full detail cards (`GlobalSearchResultCard`) rather than
+    compact table rows — photo, title+link, platform/verified/off-plan/price-drop/possible-
+    duplicate badges, which job/search it was captured under + how long ago, price (+ strikethrough
+    prior price on a drop), AED/sqft, area, beds/baths, rented-for, listed-days-ago, score+
+    confidence, community, distress keywords, description, agent/WhatsApp, and a wishlist star —
+    "all the details" the per-job results table shows, just card-shaped instead of row-shaped since
+    a modal list reads better vertically.
+  - **Live-verified against real captured data**: searched "Sports View Residence" via the real
+    API — correctly matched listings whose TITLE contains it AND a separate listing whose title is
+    unrelated but whose `location_text` contains it (proving the OR-across-3-fields matching works,
+    not just a title-only search); confirmed `limit` truncates correctly (50 default → 3 when
+    requested); confirmed a 1-character query cleanly 400s (below the 2-char floor) and an
+    unauthenticated request 401s. Verified the built frontend bundle contains "Global Search"/
+    "Tower or building name"/"Captured under" (the modal's own strings) — an actual browser click-
+    through wasn't performed (no browser tool available this pass), flagged as a real gap.
 - **Known follow-up, not yet done**: `supabase/` (CLI config + old Lovable-era migrations) is dead
   weight left over from the original scaffold — the real schema is `db/migrations/*.sql` via
   node-pg-migrate. Safe to delete, just hasn't been done. Prod deployment target (which host, TLS

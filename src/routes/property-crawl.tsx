@@ -53,6 +53,7 @@ import {
   usePropertyJobs,
   usePropertyJobSchedules,
   usePropertyResults,
+  usePropertySearch,
   usePropertyWishlist,
   useRefreshListing,
   useRemoveFromWishlist,
@@ -95,6 +96,7 @@ import type {
   PropertyListingWithHistory,
   PropertyPlatform,
   PropertyPurpose,
+  PropertySearchResult,
   PropertyStatus,
   PropertyType,
 } from "@/types/api";
@@ -274,6 +276,7 @@ function PropertyCrawl() {
   const [compareOpen, setCompareOpen] = useState(false);
   const [wishlistOpen, setWishlistOpen] = useState(false);
   const [schedulesOpen, setSchedulesOpen] = useState(false);
+  const [globalSearchOpen, setGlobalSearchOpen] = useState(false);
   // 24h default — a daily re-check is the use case the user described ("fetching the same area
   // listing on daily basis"); the field stays editable per-schedule.
   const [scheduleIntervalHours, setScheduleIntervalHours] = useState(24);
@@ -727,9 +730,17 @@ function PropertyCrawl() {
             className={`h-3.5 w-3.5 transition-transform ${schedulesOpen ? "rotate-180" : ""}`}
           />
         </button>
+        <button
+          onClick={() => setGlobalSearchOpen(true)}
+          className="flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground"
+        >
+          <Search className="h-4 w-4" />
+          Global Search
+        </button>
       </div>
       {wishlistOpen && <WishlistPanel />}
       {schedulesOpen && <SchedulesPanel />}
+      {globalSearchOpen && <GlobalSearchModal onClose={() => setGlobalSearchOpen(false)} />}
 
       {focus && (
         <Card className="mt-4 border-border bg-card p-5">
@@ -1796,6 +1807,280 @@ function SchedulesPanel() {
         </div>
       )}
     </Card>
+  );
+}
+
+// Global search — across EVERY captured listing (not scoped to one job), matched against the
+// listing's title/community/location_text (a tower/building name usually shows up in one of
+// those). Self-contained: owns its own query input + debounce, rather than syncing with the
+// toolbar trigger button — simpler than keeping two components' state in lockstep, and matches
+// WishlistPanel/CompareModal's own self-contained-panel convention in this file.
+function GlobalSearchModal({ onClose }: { onClose: () => void }) {
+  const [query, setQuery] = useState("");
+  const debouncedQuery = useDebouncedValue(query, 350);
+  const trimmed = debouncedQuery.trim();
+  const { data: results = [], isLoading, isFetching } = usePropertySearch(trimmed, true);
+  const { data: wishlist = [] } = usePropertyWishlist();
+  const wishlistedUrls = useMemo(
+    () => new Set(wishlist.map((w) => w.listing_url).filter((u): u is string => u !== null)),
+    [wishlist],
+  );
+  const addToWishlist = useAddToWishlist();
+
+  return (
+    <div className="fixed inset-0 z-40 flex items-start justify-center bg-black/50 p-4 pt-[8vh]">
+      <div className="max-h-[80vh] w-full max-w-3xl overflow-hidden rounded-lg border border-border bg-card">
+        <div className="flex items-center gap-2 border-b border-border p-3">
+          <Search className="h-4 w-4 shrink-0 text-muted-foreground" />
+          <Input
+            autoFocus
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Tower or building name (e.g. Marina Gate 2, Damac Hills 2)…"
+            className="h-9 flex-1 border-0 bg-transparent px-0 shadow-none focus-visible:ring-0"
+          />
+          <button
+            onClick={onClose}
+            className="shrink-0 text-muted-foreground hover:text-foreground"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+        <div className="max-h-[calc(80vh-56px)] overflow-y-auto p-3">
+          {trimmed.length > 0 && trimmed.length < 2 && (
+            <p className="py-6 text-center text-sm text-muted-foreground">
+              Keep typing — at least 2 characters.
+            </p>
+          )}
+          {trimmed.length === 0 && (
+            <p className="py-6 text-center text-sm text-muted-foreground">
+              Searches every listing ever captured, across all searches/platforms — type a tower,
+              building, or community name.
+            </p>
+          )}
+          {trimmed.length >= 2 && isLoading && (
+            <div className="flex items-center justify-center gap-2 py-10 text-sm text-muted-foreground">
+              <Loader2 className="h-4 w-4 animate-spin" /> Searching…
+            </div>
+          )}
+          {trimmed.length >= 2 && !isLoading && results.length === 0 && (
+            <p className="py-6 text-center text-sm text-muted-foreground">
+              No listings matched "{trimmed}" in anything captured so far.
+            </p>
+          )}
+          {results.length > 0 && (
+            <div className="grid gap-3">
+              {isFetching && !isLoading && (
+                <p className="text-[11px] text-muted-foreground">Updating…</p>
+              )}
+              {results.map((l) => (
+                <GlobalSearchResultCard
+                  key={l.id}
+                  l={l}
+                  wishlisted={l.listing_url !== null && wishlistedUrls.has(l.listing_url)}
+                  onAddToWishlist={() =>
+                    addToWishlist.mutate(l.id, {
+                      onSuccess: ({ alreadySaved }) =>
+                        toast.success(alreadySaved ? "Already in wishlist" : "Saved to wishlist"),
+                      onError: (e) => toast.error(e.message),
+                    })
+                  }
+                />
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// One matched listing rendered as a full detail card (a modal's list naturally reads better as
+// vertical cards than the compact table rows the main results view uses) — every field the main
+// ResultRow shows, plus which job/platform/search it came from since a global-search result can
+// be from any of them.
+function GlobalSearchResultCard({
+  l,
+  wishlisted,
+  onAddToWishlist,
+}: {
+  l: PropertySearchResult;
+  wishlisted: boolean;
+  onAddToWishlist: () => void;
+}) {
+  const thumb = l.image_urls[0] ?? propertyImageUrl(l.job_id, l.source_images[0]);
+  const priorPrice = l.previous_price ?? l.latest_refresh?.old_price ?? null;
+
+  return (
+    <div
+      className={`flex gap-3 rounded-md border border-border p-3 ${l.price_dropped ? "bg-success/10" : ""}`}
+    >
+      {thumb ? (
+        <img
+          src={thumb}
+          alt={l.title}
+          className="h-20 w-20 shrink-0 rounded border border-border object-cover"
+        />
+      ) : (
+        <span className="flex h-20 w-20 shrink-0 items-center justify-center rounded border border-border bg-muted/40 text-muted-foreground">
+          <ImageOff className="h-4 w-4" />
+        </span>
+      )}
+      <div className="min-w-0 flex-1">
+        <div className="flex flex-wrap items-center gap-1.5">
+          {l.listing_url ? (
+            <a
+              href={l.listing_url}
+              target="_blank"
+              rel="noreferrer"
+              className="flex items-center gap-1 truncate text-sm font-medium text-primary hover:underline"
+              title={l.title}
+            >
+              {l.title}
+              <ExternalLink className="h-3 w-3 shrink-0" />
+            </a>
+          ) : (
+            <span className="truncate text-sm font-medium" title={l.title}>
+              {l.title}
+            </span>
+          )}
+          <span className="shrink-0 rounded bg-muted px-1 text-[9px] uppercase text-muted-foreground">
+            {l.platform}
+          </span>
+          {l.verified && (
+            <span title="Verified listing">
+              <ShieldCheck className="h-3.5 w-3.5 shrink-0 text-success" />
+            </span>
+          )}
+          {l.is_offplan && (
+            <span className="shrink-0 rounded bg-primary/15 px-1 text-[9px] uppercase text-primary">
+              off-plan
+            </span>
+          )}
+          {l.price_dropped && (
+            <span className="flex shrink-0 items-center gap-0.5 rounded bg-success/20 px-1 text-[9px] uppercase text-success">
+              <TrendingDown className="h-2.5 w-2.5" /> price drop
+            </span>
+          )}
+          {l.possible_duplicate && (
+            <span
+              title={`Likely the same unit on ${l.possible_duplicate.platform}: "${l.possible_duplicate.title}"`}
+              className="flex shrink-0 items-center gap-0.5 rounded bg-warning/20 px-1 text-[9px] uppercase text-warning"
+            >
+              <GitCompare className="h-2.5 w-2.5" /> also on {l.possible_duplicate.platform}
+            </span>
+          )}
+          <button
+            onClick={() => {
+              if (!wishlisted) onAddToWishlist();
+            }}
+            title={wishlisted ? "In your wishlist" : "Save to wishlist"}
+            className="ml-auto shrink-0"
+          >
+            <Heart
+              className={`h-3.5 w-3.5 ${wishlisted ? "fill-destructive text-destructive" : "text-muted-foreground hover:text-destructive"}`}
+            />
+          </button>
+        </div>
+
+        <p className="mt-0.5 truncate text-xs text-muted-foreground">
+          Captured under "{l.job_location}" search · {timeAgo(l.created_at)}
+        </p>
+
+        <div className="mt-2 grid grid-cols-2 gap-x-4 gap-y-1 text-xs sm:grid-cols-4">
+          <div>
+            <div className="text-[10px] uppercase text-muted-foreground">Price</div>
+            <div className={l.price_dropped ? "font-medium text-success" : undefined}>
+              {formatMoney(l.price, l.currency)}
+            </div>
+            {l.price_dropped && priorPrice !== null && (
+              <div className="text-[10px] text-muted-foreground line-through">
+                {formatMoney(priorPrice, l.currency)}
+              </div>
+            )}
+          </div>
+          <div>
+            <div className="text-[10px] uppercase text-muted-foreground">AED/sqft</div>
+            <div>{l.price_per_sqft !== null ? Number(l.price_per_sqft).toLocaleString() : "—"}</div>
+          </div>
+          <div>
+            <div className="text-[10px] uppercase text-muted-foreground">Area</div>
+            <div>{l.area_sqft !== null ? `${Number(l.area_sqft).toLocaleString()} sqft` : "—"}</div>
+          </div>
+          <div>
+            <div className="text-[10px] uppercase text-muted-foreground">Beds/Baths</div>
+            <div className="inline-flex items-center gap-2">
+              <span className="inline-flex items-center gap-0.5">
+                <Bed className="h-3 w-3 text-muted-foreground" />
+                {l.bedrooms ?? "—"}
+              </span>
+              <span className="inline-flex items-center gap-0.5">
+                <Bath className="h-3 w-3 text-muted-foreground" />
+                {l.bathrooms ?? "—"}
+              </span>
+            </div>
+          </div>
+          <div>
+            <div className="text-[10px] uppercase text-muted-foreground">Rented for</div>
+            <div>
+              {l.average_rent !== null ? `${formatMoney(l.average_rent, l.currency)}/yr` : "—"}
+            </div>
+          </div>
+          <div>
+            <div className="text-[10px] uppercase text-muted-foreground">Listed</div>
+            <div>
+              {l.listed_days_ago !== null ? `${l.listed_days_ago}d ago` : (l.listed_date ?? "—")}
+            </div>
+          </div>
+          <div>
+            <div className="text-[10px] uppercase text-muted-foreground">Score</div>
+            <div>
+              {l.distress_score !== null ? l.distress_score.toFixed(0) : "—"}
+              {l.distress_confidence !== null && (
+                <span className="text-[10px] text-muted-foreground">
+                  {" "}
+                  ({l.distress_confidence.toFixed(0)}% conf.)
+                </span>
+              )}
+            </div>
+          </div>
+          <div>
+            <div className="text-[10px] uppercase text-muted-foreground">Community</div>
+            <div className="truncate">{l.community ?? l.location_text ?? "—"}</div>
+          </div>
+        </div>
+
+        {l.distress_keywords.length > 0 && (
+          <div className="mt-2 flex flex-wrap gap-1">
+            {l.distress_keywords.map((k) => (
+              <Badge key={k} variant="secondary" className="px-1.5 py-0 text-[9px]">
+                {k}
+              </Badge>
+            ))}
+          </div>
+        )}
+
+        {l.description && (
+          <p className="mt-2 line-clamp-2 text-xs text-muted-foreground">{l.description}</p>
+        )}
+
+        {(l.agent_name || l.whatsapp_link) && (
+          <div className="mt-2 flex items-center gap-2 text-xs">
+            {l.agent_name && <span className="text-muted-foreground">{l.agent_name}</span>}
+            {l.whatsapp_link && (
+              <a href={l.whatsapp_link} target="_blank" rel="noreferrer">
+                <Button
+                  size="sm"
+                  className="h-6 gap-1 bg-success px-2 text-success-foreground hover:bg-success/90"
+                >
+                  <MessageCircle className="h-3 w-3" /> WhatsApp
+                </Button>
+              </a>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
   );
 }
 

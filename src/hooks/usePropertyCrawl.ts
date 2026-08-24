@@ -15,6 +15,7 @@ import type {
   PropertyPlatform,
   PropertyPurpose,
   PropertyScoreWeights,
+  PropertySearchResult,
   PropertyStatus,
   PropertyType,
   PropertyWishlistItem,
@@ -30,6 +31,7 @@ export const propertyKeys = {
   refresh: (listingId: string, refreshId: string) =>
     [...propertyKeys.all, "refresh", listingId, refreshId] as const,
   schedules: () => [...propertyKeys.all, "schedules"] as const,
+  search: (query: string) => [...propertyKeys.all, "search", query] as const,
 };
 
 interface CreatePropertyJobInput {
@@ -275,5 +277,20 @@ export function useDeletePropertyJobSchedule() {
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: propertyKeys.schedules() });
     },
+  });
+}
+
+// --- Global search (by tower/building/community name, across EVERY job) ------------------------
+
+export function usePropertySearch(query: string, enabled: boolean) {
+  return useQuery({
+    queryKey: propertyKeys.search(query),
+    queryFn: async () =>
+      (
+        await api.get<{ results: PropertySearchResult[] }>(
+          `/property-crawl/search?q=${encodeURIComponent(query)}`,
+        )
+      ).results,
+    enabled: enabled && query.trim().length >= 2,
   });
 }

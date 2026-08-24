@@ -25,6 +25,7 @@ import {
   propertyExportQuerySchema,
   propertyJobIdParamsSchema,
   propertyJobScheduleIdParamsSchema,
+  searchPropertyListingsQuerySchema,
   setPropertyJobScheduleEnabledSchema,
   wishlistItemIdParamsSchema,
   type AddToWishlistInput,
@@ -49,6 +50,7 @@ import {
 import {
   findPropertyListingWithPlatform,
   listPropertyListingsWithHistory,
+  searchPropertyListingsGlobally,
 } from "../db/propertyListings.js";
 import {
   createListingRefresh,
@@ -133,6 +135,20 @@ propertyCrawlRouter.get("/property-crawl/jobs", requireAuth, async (_req, res) =
   const jobs = await listPropertyJobs();
   res.json({ jobs });
 });
+
+// Global search — every captured listing across EVERY job, by tower/building/community name
+// (matched against title/community/location_text). Registered as a literal sibling of "/jobs"
+// above, not nested under it, since results intentionally span multiple jobs/platforms/searches.
+propertyCrawlRouter.get(
+  "/property-crawl/search",
+  requireAuth,
+  validate(searchPropertyListingsQuerySchema, "query"),
+  async (req, res) => {
+    const { q, limit } = req.validatedQuery as unknown as { q: string; limit: number };
+    const results = await searchPropertyListingsGlobally(q, limit);
+    res.json({ results });
+  },
+);
 
 propertyCrawlRouter.get(
   "/property-crawl/jobs/:id",
