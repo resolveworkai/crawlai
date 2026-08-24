@@ -21,6 +21,12 @@ export const createPropertyJobSchema = z.object({
   // No confirmed server-side URL param for either platform — enforced client-side at capture time
   // against each listing's own is_offplan flag. Defaults to "ready" (confirmed preference).
   propertyStatus: z.enum(["ready", "offplan", "any"]).default("ready"),
+  // The SOURCE SITE's own sort order, applied BEFORE scraping (2026-08-24) — empirically confirmed
+  // live against both real sites' own sort UI, see the worker adapters' own _SORT_PARAM maps.
+  // "default" = each platform's own out-of-the-box ordering (dubizzle: Popular; propertyfinder:
+  // Featured). "Rating"/"review" sort was asked for but doesn't exist on either site — "newest"
+  // and "price" are the two dimensions BOTH platforms genuinely support server-side.
+  sortOrder: z.enum(["default", "newest", "price_low_high", "price_high_low"]).default("default"),
   maxPages: z.coerce.number().int().min(1).max(20).default(20),
   maxListings: z.coerce.number().int().positive().max(500).default(100),
   // How many of the top-ranked (by distress_score) listings get a detail-page visit to reveal a

@@ -75,6 +75,22 @@ _CATEGORY_CODE = {
     "studio": "1",
 }
 
+# Real propertyfinder "Sort by" panel values (2026-08-24) — empirically confirmed live via the
+# operator's real Chrome: opened the icon-only sort control (between "Filters" and the bell icon —
+# no text label, no aria-label; located by screenshot, not guessed) on a real apartment-for-sale
+# search and clicked through each radio option, reading the resulting `ob=` query param back off
+# the URL each time. "Featured" (the default, "mr") was already a confirmed value baked into this
+# file before this map existed — the other three are new confirmations from the same recon pass.
+# "Beds (least/most)" exist on the real site too (ba/bd) but aren't exposed via PropertySortOrder —
+# dubizzle has no equivalent bedroom-count sort, and this module only surfaces sort dimensions BOTH
+# platforms genuinely support, so a caller's choice behaves consistently across platform switches.
+_SORT_PARAM: dict[str, str] = {
+    "default": "mr",
+    "newest": "nd",
+    "price_low_high": "pa",
+    "price_high_low": "pd",
+}
+
 _CARD_SELECTORS: tuple[str, ...] = (
     'article[class*="property-card__wrapper"]',
     'a[href*="/plp/"]',
@@ -170,7 +186,7 @@ class PropertyFinderAdapter(PlatformAdapter):
         params = [
             f"c={category}",
             f"fu={purpose_fu}",
-            "ob=mr",  # order-by: most-recent — sensible default, distress scoring re-ranks anyway
+            f"ob={_SORT_PARAM.get(filters.sort, 'mr')}",
         ]
         bedrooms = 0 if filters.property_type == "studio" else filters.bedrooms
         if bedrooms is not None:

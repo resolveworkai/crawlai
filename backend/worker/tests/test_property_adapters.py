@@ -78,6 +78,29 @@ def test_dubizzle_search_url_location_is_url_encoded() -> None:
     assert "keywords=al%20barsha%20south" in url
 
 
+# --- sort (2026-08-24, empirically confirmed live — see the adapter's own _SORT_PARAM comment) --
+
+
+def test_dubizzle_search_url_default_sort_omits_sorting_param() -> None:
+    url = DubizzleAdapter().search_url(_filters(), 1)
+    assert "sorting=" not in url
+
+
+def test_dubizzle_search_url_newest_sort() -> None:
+    url = DubizzleAdapter().search_url(_filters(sort="newest"), 1)
+    assert "sorting=date_desc" in url
+
+
+def test_dubizzle_search_url_price_low_high_sort() -> None:
+    url = DubizzleAdapter().search_url(_filters(sort="price_low_high"), 1)
+    assert "sorting=price_asc" in url
+
+
+def test_dubizzle_search_url_price_high_low_sort() -> None:
+    url = DubizzleAdapter().search_url(_filters(sort="price_high_low"), 1)
+    assert "sorting=price_desc" in url
+
+
 # --- dubizzle.listing_key ---------------------------------------------------------------------
 
 
@@ -156,6 +179,29 @@ def test_propertyfinder_search_url_no_bedrooms_filter_when_none() -> None:
 def test_propertyfinder_search_url_includes_bathrooms_when_given() -> None:
     url = PropertyFinderAdapter().search_url(_filters(bathrooms=2), 1)
     assert "bathf=2" in url
+
+
+# --- sort (2026-08-24, empirically confirmed live — see the adapter's own _SORT_PARAM comment) --
+
+
+def test_propertyfinder_search_url_default_sort_is_mr() -> None:
+    url = PropertyFinderAdapter().search_url(_filters(), 1)
+    assert "ob=mr" in url
+
+
+def test_propertyfinder_search_url_newest_sort() -> None:
+    url = PropertyFinderAdapter().search_url(_filters(sort="newest"), 1)
+    assert "ob=nd" in url
+
+
+def test_propertyfinder_search_url_price_low_high_sort() -> None:
+    url = PropertyFinderAdapter().search_url(_filters(sort="price_low_high"), 1)
+    assert "ob=pa" in url
+
+
+def test_propertyfinder_search_url_price_high_low_sort() -> None:
+    url = PropertyFinderAdapter().search_url(_filters(sort="price_high_low"), 1)
+    assert "ob=pd" in url
 
 
 def test_propertyfinder_search_url_no_location_param_before_resolution() -> None:

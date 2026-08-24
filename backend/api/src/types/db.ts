@@ -377,6 +377,12 @@ export type PropertyEndReason =
 // preference).
 export type PropertyStatus = "ready" | "offplan" | "any";
 
+// The SOURCE SITE's own sort order, applied BEFORE scraping (2026-08-24, migration
+// 1786200000000) — distinct from the frontend's post-capture SortKey. Empirically confirmed live
+// against both real sites — see the worker's adapters/{dubizzle,propertyfinder}.py _SORT_PARAM
+// maps. "default" = each platform's own out-of-the-box ordering.
+export type PropertySortOrder = "default" | "newest" | "price_low_high" | "price_high_low";
+
 export interface PropertyScoreWeights {
   value?: number | undefined;
   keywords?: number | undefined;
@@ -394,6 +400,7 @@ export interface PropertyJob {
   property_type: PropertyType;
   purpose: PropertyPurpose;
   property_status: PropertyStatus;
+  sort_order: PropertySortOrder;
   max_pages: number;
   max_listings: number;
   detail_scrape_top_n: number;
@@ -427,6 +434,7 @@ export interface PropertyJobSchedule {
   property_type: PropertyType;
   purpose: PropertyPurpose;
   property_status: PropertyStatus;
+  sort_order: PropertySortOrder;
   max_pages: number;
   max_listings: number;
   detail_scrape_top_n: number;

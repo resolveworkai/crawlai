@@ -31,6 +31,7 @@ export async function runDuePropertySchedules(): Promise<void> {
           propertyType: schedule.property_type,
           purpose: schedule.purpose,
           propertyStatus: schedule.property_status,
+          sortOrder: schedule.sort_order,
           maxPages: schedule.max_pages,
           maxListings: schedule.max_listings,
           detailScrapeTopN: schedule.detail_scrape_top_n,

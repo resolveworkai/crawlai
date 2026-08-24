@@ -24,6 +24,15 @@ Purpose = Literal["buy", "rent"]
 # signal — no server-side URL param confirmed for this, so it's enforced client-side at capture
 # time (see capture.py), same pattern as the bathroom floor.
 PropertyStatus = Literal["ready", "offplan", "any"]
+# The SOURCE SITE's own sort order, applied BEFORE capture (2026-08-24) — distinct from the
+# frontend's post-capture SortKey, which only re-orders what's already been scraped. Empirically
+# confirmed live against both real sites (not guessed) — see adapters/dubizzle.py and
+# adapters/propertyfinder.py's own _SORT_PARAM maps for the real query-param values this maps to
+# on each platform. "Rating"/"review" sort was explicitly asked for but doesn't exist as a concept
+# on either site (no listing has a rating) — "newest" and "price" are the two dimensions BOTH
+# platforms genuinely support server-side, so those are what's offered; "default" is each
+# platform's own out-of-the-box ordering (dubizzle: "Popular"; propertyfinder: "Featured").
+PropertySortOrder = Literal["default", "newest", "price_low_high", "price_high_low"]
 PropertyJobStatus = Literal[
     "queued", "capturing", "parsing", "detail", "scoring", "ready", "failed", "blocked"
 ]
@@ -46,6 +55,7 @@ class PropertyJob(BaseModel):
     property_type: PropertyType
     purpose: Purpose
     property_status: PropertyStatus = "ready"
+    sort_order: PropertySortOrder = "default"
     max_pages: int
     max_listings: int
     detail_scrape_top_n: int

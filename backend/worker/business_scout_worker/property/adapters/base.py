@@ -19,6 +19,7 @@ from playwright.async_api import BrowserContext, ElementHandle, Locator, Page
 from business_scout_worker.property.models import (
     DomDetailFields,
     DomListingFields,
+    PropertySortOrder,
     PropertyStatus,
     Purpose,
 )
@@ -40,6 +41,7 @@ class SearchFilters:
         property_type: str,
         purpose: Purpose,
         property_status: PropertyStatus = "ready",
+        sort: PropertySortOrder = "default",
     ) -> None:
         self.location = location
         self.bedrooms = bedrooms
@@ -47,6 +49,7 @@ class SearchFilters:
         self.property_type = property_type
         self.purpose = purpose
         self.property_status = property_status
+        self.sort = sort
 
 
 class PlatformAdapter(ABC):

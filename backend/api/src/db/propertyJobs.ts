@@ -13,6 +13,7 @@ import type {
   PropertyPlatform,
   PropertyPurpose,
   PropertyScoreWeights,
+  PropertySortOrder,
   PropertyStatus,
   PropertyType,
 } from "../types/db.js";
@@ -29,6 +30,7 @@ export async function createPropertyJob(input: {
   propertyType: PropertyType;
   purpose: PropertyPurpose;
   propertyStatus: PropertyStatus;
+  sortOrder?: PropertySortOrder | undefined;
   maxPages: number;
   maxListings: number;
   detailScrapeTopN: number;
@@ -38,10 +40,10 @@ export async function createPropertyJob(input: {
   const { rows } = await pool.query<PropertyJob>(
     `INSERT INTO property_jobs (
        created_by, platform, location, bedrooms, bathrooms, property_type, purpose,
-       property_status, max_pages, max_listings, detail_scrape_top_n,
+       property_status, sort_order, max_pages, max_listings, detail_scrape_top_n,
        whatsapp_message_template, score_weights
      )
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
      RETURNING *`,
     [
       input.createdBy,
@@ -52,6 +54,7 @@ export async function createPropertyJob(input: {
       input.propertyType,
       input.purpose,
       input.propertyStatus,
+      input.sortOrder ?? "default",
       input.maxPages,
       input.maxListings,
       input.detailScrapeTopN,

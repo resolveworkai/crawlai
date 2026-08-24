@@ -83,6 +83,7 @@ async def run_property_job(
             property_type=job.property_type,
             purpose=job.purpose,
             property_status=job.property_status,
+            sort=job.sort_order,
         )
 
         manifest_path = job_dir / "manifest.json"

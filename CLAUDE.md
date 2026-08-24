@@ -674,6 +674,44 @@ on this status for a deploy decision.
     critically, that propertyfinder was claimed within SECONDS of restart — concurrently with an
     already-running dubizzle job — and was genuinely capturing real listings
     ("The Diamond, Dubai Sports City, Dubai"), not just marked as claimed.
+- **Sort-before-scraping — the SOURCE SITE's own sort order, both platforms (2026-08-24)**: a
+  direct ask — "sort by cost/rating/review/other available parameter BEFORE scraping" — was
+  investigated honestly: "rating"/"review" don't exist as a concept on either dubizzle or
+  propertyfinder (no listing has one), so those weren't fabricated. What both sites genuinely
+  support server-side: **newest** and **price (low↔high)** — confirmed empirically, not guessed,
+  via real screenshots of each site's own sort UI clicked through live on the operator's real
+  Chrome:
+  - **dubizzle**: a "Sort: Popular" button opens a dropdown (Popular/Verified/Newest to Oldest/
+    Oldest to Newest/Price Highest to Lowest/Price Lowest to Highest) — clicking each and reading
+    the resulting URL confirmed `sorting=date_desc|date_asc|price_desc|price_asc` (Popular = no
+    param at all; "Verified" turned out to be the pre-existing "Show Verified First" toggle, not a
+    real sort mode — clicking it left the URL unchanged).
+  - **propertyfinder**: an icon-only button (no text/aria-label — found only by screenshot, between
+    "Filters" and the bell icon) opens a "Sort by" panel (Featured/Newest/Price low/Price high/
+    Beds least/Beds most) — confirmed `ob=mr|nd|pa|pd` (+`ba`/`bd` for beds, not surfaced since
+    dubizzle has no equivalent bedroom sort and this feature only exposes dimensions BOTH platforms
+    share, so a choice behaves consistently across a platform switch).
+  - **Shared `PropertySortOrder`** (`"default"|"newest"|"price_low_high"|"price_high_low"`) — new
+    `models.py`/`db.ts`/`types/api.ts` type, new `sort_order` column on both `property_jobs` AND
+    `property_job_schedules` (migration `1786200000000` — a saved recurring search remembers its
+    sort choice too, fired into every job it creates same as every other criteria field).
+    `SearchFilters` (worker) gained a `sort` field; each adapter's own `_SORT_PARAM` dict maps it
+    to that platform's real query param, with the confirmation method documented inline as a
+    comment (never re-derive/guess these if the site's UI ever changes — re-screenshot it).
+  - **Frontend**: a "Sort by" `<Select>` in the launch form (next to Status), threaded through
+    Launch/Save-as-recurring/Refresh-Search identically to every other criteria field; the recent-
+    jobs list and Scheduled-Searches panel both show the chosen sort in their filter-summary line
+    (omitted when "default", to avoid cluttering the common case).
+  - **Live-verified end-to-end against the real running sites** (not just the URL — the actual
+    resulting DATA): launched a real dubizzle job with `price_low_high` and confirmed the 5 real
+    captured listings' prices were genuinely ascending (262,943 → 419,999 → 420,000 → 440,000 →
+    445,000); launched a real propertyfinder job with `price_high_low` and confirmed the 8 real
+    captured listings' prices were genuinely descending (2,244,000 → … → 875,000). Both jobs and
+    their captured data deleted after verification. Restarted the live property host runner to
+    pick up the code (killed only its own 2 PIDs by exact match, never a blanket kill — same
+    discipline as every other restart this session).
+  - Tests: 8 new cases in `test_property_adapters.py` (default/newest/price-low/price-high × both
+    adapters) — full adapter suite 42/42 passing, full property suite 117/117.
 - **Known follow-up, not yet done**: `supabase/` (CLI config + old Lovable-era migrations) is dead
   weight left over from the original scaffold — the real schema is `db/migrations/*.sql` via
   node-pg-migrate. Safe to delete, just hasn't been done. Prod deployment target (which host, TLS

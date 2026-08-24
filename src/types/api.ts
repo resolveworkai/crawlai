@@ -344,6 +344,12 @@ export type PropertyPurpose = "buy" | "rent";
 // against each listing's own is_offplan flag. Defaults to "ready" (confirmed preference).
 export type PropertyStatus = "ready" | "offplan" | "any";
 
+// The SOURCE SITE's own sort order, applied BEFORE scraping (2026-08-24) — distinct from the
+// results table's own client-side SortKey, which only re-orders what's already been captured.
+// Empirically confirmed live against both real sites' own sort UI. "default" = each platform's own
+// out-of-the-box ordering (dubizzle: Popular; propertyfinder: Featured).
+export type PropertySortOrder = "default" | "newest" | "price_low_high" | "price_high_low";
+
 export type PropertyJobStatus =
   "queued" | "capturing" | "parsing" | "detail" | "scoring" | "ready" | "failed" | "blocked";
 
@@ -367,6 +373,7 @@ export interface PropertyJob {
   property_type: PropertyType;
   purpose: PropertyPurpose;
   property_status: PropertyStatus;
+  sort_order: PropertySortOrder;
   max_pages: number;
   max_listings: number;
   detail_scrape_top_n: number;
@@ -504,6 +511,7 @@ export interface PropertyJobSchedule {
   property_type: PropertyType;
   purpose: PropertyPurpose;
   property_status: PropertyStatus;
+  sort_order: PropertySortOrder;
   max_pages: number;
   max_listings: number;
   detail_scrape_top_n: number;

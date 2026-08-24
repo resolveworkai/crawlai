@@ -66,6 +66,18 @@ _TYPE_SEGMENT = {
 }
 _PURPOSE_SEGMENT = {"buy": "property-for-sale", "rent": "property-for-rent"}
 
+# Real dubizzle "Sort" dropdown values (2026-08-24) — empirically confirmed live via the operator's
+# real Chrome: opened the "Sort: Popular" control on a real JVC apartment search and clicked
+# through each option, reading the resulting `sorting=` query param back off the URL. "Popular"
+# (the default) carries NO `sorting` param at all — confirmed via the same method, not assumed.
+# "Verified" (visually grouped in the same dropdown) is NOT a sort mode — clicking it left the URL
+# unchanged, it's the same "Show Verified First" toggle already present elsewhere on the page.
+_SORT_PARAM: dict[str, str] = {
+    "newest": "date_desc",
+    "price_low_high": "price_asc",
+    "price_high_low": "price_desc",
+}
+
 _CARD_SELECTORS: tuple[str, ...] = (
     'div[class*="property-lpv-card"]',
     'a[href*="/property-for-sale/"]',
@@ -122,6 +134,8 @@ class DubizzleAdapter(PlatformAdapter):
             # Unverified server-side param (see module docstring) — harmless if dubizzle ignores
             # it; capture.py's client-side floor is the real enforcement either way.
             params.append(f"bathrooms={filters.bathrooms}")
+        if filters.sort in _SORT_PARAM:
+            params.append(f"sorting={_SORT_PARAM[filters.sort]}")
         if page > 1:
             params.append(f"page={page}")
         return f"{BASE_URL}/en/{purpose_seg}/residential/{type_seg}/?{'&'.join(params)}"

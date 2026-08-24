@@ -97,6 +97,7 @@ import type {
   PropertyPlatform,
   PropertyPurpose,
   PropertySearchResult,
+  PropertySortOrder,
   PropertyStatus,
   PropertyType,
 } from "@/types/api";
@@ -189,6 +190,17 @@ const PROPERTY_STATUS_OPTIONS: { value: PropertyStatus; label: string }[] = [
   { value: "any", label: "Any" },
 ];
 
+// The SOURCE SITE's own sort order (applied before scraping) — empirically confirmed live against
+// both real sites' own sort UI (see the worker adapters' _SORT_PARAM comments). "Rating"/"review"
+// don't exist as a concept on either platform (no listing carries one) — "newest" and "price" are
+// the two dimensions BOTH dubizzle and propertyfinder genuinely support server-side.
+const SORT_ORDER_OPTIONS: { value: PropertySortOrder; label: string }[] = [
+  { value: "default", label: "Site default" },
+  { value: "newest", label: "Newest first" },
+  { value: "price_low_high", label: "Price: Low to High" },
+  { value: "price_high_low", label: "Price: High to Low" },
+];
+
 const BEDROOM_OPTIONS = [
   { value: "any", label: "Any" },
   { value: "0", label: "Studio (0)" },
@@ -223,6 +235,13 @@ type SortKey =
 
 // The search criteria a job was launched with, condensed to one line for the recent-jobs list —
 // so each row shows what was actually searched for, not just platform + location.
+// Shared with scheduleFilterSummary below — omits "default" (the common case) to avoid cluttering
+// every job/schedule row with a label that's true most of the time.
+function sortOrderLabel(sort: PropertySortOrder): string | null {
+  const found = SORT_ORDER_OPTIONS.find((opt) => opt.value === sort);
+  return found && found.value !== "default" ? found.label : null;
+}
+
 function jobFilterSummary(j: PropertyJob): string {
   const parts: string[] = [
     j.property_type,
@@ -234,6 +253,7 @@ function jobFilterSummary(j: PropertyJob): string {
         ? "ready only"
         : "off-plan only"
       : null,
+    sortOrderLabel(j.sort_order),
   ].filter((p): p is string => p !== null);
   return parts.join(" · ");
 }
@@ -247,6 +267,7 @@ function PropertyCrawl() {
   const [purpose, setPurpose] = useState<PropertyPurpose>("buy");
   // Confirmed preference: ready-only by default (see createPropertyJobSchema's own default).
   const [propertyStatus, setPropertyStatus] = useState<PropertyStatus>("ready");
+  const [sortOrder, setSortOrder] = useState<PropertySortOrder>("default");
   const [maxPages, setMaxPages] = useState(20);
   const [maxListings, setMaxListings] = useState(100);
   const [detailScrapeTopN, setDetailScrapeTopN] = useState(10);
@@ -394,6 +415,7 @@ function PropertyCrawl() {
         bathrooms: bathrooms === "any" ? undefined : Number(bathrooms),
         purpose,
         propertyStatus,
+        sortOrder,
         maxPages,
         maxListings,
         detailScrapeTopN,
@@ -427,6 +449,7 @@ function PropertyCrawl() {
         bathrooms: bathrooms === "any" ? undefined : Number(bathrooms),
         purpose,
         propertyStatus,
+        sortOrder,
         maxPages,
         maxListings,
         detailScrapeTopN,
@@ -464,6 +487,7 @@ function PropertyCrawl() {
         bathrooms: job.bathrooms ?? undefined,
         purpose: job.purpose,
         propertyStatus: job.property_status,
+        sortOrder: job.sort_order,
         maxPages: job.max_pages,
         maxListings: job.max_listings,
         detailScrapeTopN: job.detail_scrape_top_n,
@@ -588,6 +612,21 @@ function PropertyCrawl() {
               </SelectTrigger>
               <SelectContent>
                 {PROPERTY_STATUS_OPTIONS.map((opt) => (
+                  <SelectItem key={opt.value} value={opt.value}>
+                    {opt.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <div>
+            <label className="text-xs text-muted-foreground">Sort by</label>
+            <Select value={sortOrder} onValueChange={(v) => setSortOrder(v as PropertySortOrder)}>
+              <SelectTrigger className="mt-1 h-9 bg-input">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {SORT_ORDER_OPTIONS.map((opt) => (
                   <SelectItem key={opt.value} value={opt.value}>
                     {opt.label}
                   </SelectItem>
@@ -1732,6 +1771,7 @@ function scheduleFilterSummary(s: PropertyJobSchedule): string {
         ? "ready only"
         : "off-plan only"
       : null,
+    sortOrderLabel(s.sort_order),
   ].filter((p): p is string => p !== null);
   return parts.join(" · ");
 }

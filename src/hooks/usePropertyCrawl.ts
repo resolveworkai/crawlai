@@ -16,6 +16,7 @@ import type {
   PropertyPurpose,
   PropertyScoreWeights,
   PropertySearchResult,
+  PropertySortOrder,
   PropertyStatus,
   PropertyType,
   PropertyWishlistItem,
@@ -42,6 +43,7 @@ interface CreatePropertyJobInput {
   propertyType?: PropertyType;
   purpose?: PropertyPurpose;
   propertyStatus?: PropertyStatus;
+  sortOrder?: PropertySortOrder;
   maxPages?: number;
   maxListings?: number;
   detailScrapeTopN?: number;
