@@ -12,6 +12,14 @@ import type { ReactNode } from "react";
 
 import appCss from "../styles.css?url";
 import { Toaster } from "@/components/ui/sonner";
+import { useTheme } from "@/hooks/useTheme";
+
+// Runs synchronously, before paint and before React hydrates — reads the persisted theme choice
+// and applies it to <html> immediately, so a returning user who picked "light" never sees a flash
+// of the server-rendered dark default first. suppressHydrationWarning on <html> (below) stops
+// React from fighting this DOM mutation when it later hydrates and finds a className it didn't
+// render itself.
+const THEME_INIT_SCRIPT = `(function(){try{var t=localStorage.getItem("theme");var d=document.documentElement;if(t==="light"){d.classList.remove("dark")}else{d.classList.add("dark")}}catch(e){}})();`;
 
 function NotFoundComponent() {
   return (
@@ -114,8 +122,10 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
 
 function RootShell({ children }: { children: ReactNode }) {
   return (
-    <html lang="en" className="dark">
+    <html lang="en" className="dark" suppressHydrationWarning>
       <head>
+        {/* Static string, no user input — the theme-flash guard described above THEME_INIT_SCRIPT. */}
+        <script dangerouslySetInnerHTML={{ __html: THEME_INIT_SCRIPT }} />
         <HeadContent />
       </head>
       <body>
@@ -128,11 +138,12 @@ function RootShell({ children }: { children: ReactNode }) {
 
 function RootComponent() {
   const { queryClient } = Route.useRouteContext();
+  const { theme } = useTheme();
 
   return (
     <QueryClientProvider client={queryClient}>
       <Outlet />
-      <Toaster position="bottom-right" theme="dark" />
+      <Toaster position="bottom-right" theme={theme} />
     </QueryClientProvider>
   );
 }

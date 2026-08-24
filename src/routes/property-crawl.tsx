@@ -434,6 +434,45 @@ function PropertyCrawl() {
     );
   }
 
+  // "Refresh" a job = re-run the SAME search criteria as a brand-new job (not to be confused with
+  // the per-row RefreshListingButton, which re-checks one already-captured listing's live price).
+  // No new backend endpoint needed: the new job is an ordinary createPropertyJob call, and once it
+  // captures listings, the EXISTING cross-job price-drop matching (propertyListings.ts's
+  // listPropertyListingsWithHistory, matched on listing_url — the site's own stable identity)
+  // automatically compares each newly-captured listing's price against whatever this SAME real ad
+  // last showed in an earlier job, including this one — so "compare old vs new, highlight price
+  // drops" falls out of the existing mechanism for free; this button just saves re-typing the
+  // whole search form for a daily re-check of the same area.
+  function handleRefreshSearch(job: PropertyJob) {
+    createJob.mutate(
+      {
+        platform: job.platform,
+        location: job.location,
+        propertyType: job.property_type,
+        bedrooms: job.bedrooms ?? undefined,
+        bathrooms: job.bathrooms ?? undefined,
+        purpose: job.purpose,
+        propertyStatus: job.property_status,
+        maxPages: job.max_pages,
+        maxListings: job.max_listings,
+        detailScrapeTopN: job.detail_scrape_top_n,
+        whatsappMessageTemplate: job.whatsapp_message_template ?? undefined,
+        scoreWeights: job.score_weights ?? undefined,
+      },
+      {
+        onSuccess: ({ job: newJob, queuePosition }) => {
+          toast.success(
+            queuePosition > 0
+              ? `Refresh queued behind ${queuePosition} job${queuePosition > 1 ? "s" : ""} — new listings will show price drops vs this search`
+              : `Refreshing "${job.location}" — new listings will show price drops vs this search`,
+          );
+          setSelectedId(newJob.id);
+        },
+        onError: (e) => toast.error(e.message),
+      },
+    );
+  }
+
   function toggleCompare(l: PropertyListingWithHistory) {
     setCompareSelection((prev) => {
       const next = new Map(prev);
@@ -761,6 +800,19 @@ function PropertyCrawl() {
                     </Button>
                   </a>
                 </>
+              )}
+              {!ACTIVE.has(focus.status) && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-8 gap-1.5 border-border"
+                  disabled={createJob.isPending}
+                  title="Re-run this same search as a new job — new listings will be checked for price drops against this one"
+                  onClick={() => handleRefreshSearch(focus)}
+                >
+                  <RefreshCw className="h-3.5 w-3.5" />
+                  Refresh Search
+                </Button>
               )}
               {RETRYABLE.has(focus.status) && (
                 <Button

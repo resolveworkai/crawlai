@@ -525,6 +525,56 @@ on this status for a deploy decision.
     a single component now explicitly zeroes the new `yield` weight, or the DEFAULT_WEIGHTS merge
     would silently pollute its exact-value assertions — plus new yield-component and confidence
     tests). Full property suite: 117 passing, zero regressions.
+- **"Refresh Search" — re-run a job's own criteria as a new job (2026-08-24)**: distinct from the
+  existing per-row `RefreshListingButton` (re-checks ONE already-captured listing's live price) —
+  this is a whole-JOB action, shown on the focused job's header whenever it isn't actively running
+  (`!ACTIVE.has(focus.status)`). `handleRefreshSearch(job)` clones the focused job's own criteria
+  (platform/location/bedrooms/bathrooms/propertyType/purpose/propertyStatus/maxPages/maxListings/
+  detailScrapeTopN/whatsappMessageTemplate/scoreWeights) into an ordinary `createPropertyJob` call
+  and switches focus to the new job. **No new backend endpoint needed**: the EXISTING cross-job
+  price-drop matching (`propertyListings.ts`'s `listPropertyListingsWithHistory`, matched on
+  `listing_url` — the site's own stable identity, across ANY earlier job regardless of search) was
+  already comparing a newly-captured listing's price against whatever the same real ad last showed
+  — so "compare old vs new results and highlight price changes" falls out of that pre-existing
+  mechanism for free; this button just saves re-typing the whole search form for a daily re-check
+  of the same area (exactly the "fetching the same area listing on daily basis" use case rule 55's
+  original price-drop feature was built for).
+- **Light/dark theme toggle (2026-08-24)**: the app was dark-only (a "deep space navy" palette
+  hardcoded straight into `:root`, with `.dark` present but only ever redundantly re-declaring
+  `--background`/`--foreground` to the SAME values — no real light mode ever existed).
+  - `styles.css` rewritten: `:root` now holds a REAL light palette (same cyan-primary/navy-neutral
+    brand hue family as before, just re-lit for a white surface — new oklch values, not reused
+    dark ones), `.dark` holds the exact original dark values moved wholesale (zero visual change
+    for anyone who stays dark, which is still the default). Leaflet's dark-tile-inversion trick
+    (`.leaflet-tile { filter: invert(1)... }`) is now scoped `.dark .leaflet-tile` — it only makes
+    sense against the dark theme's navy background; light mode shows the map's real tile colors.
+    The attribution/zoom-control chrome colors now reference the theme tokens directly instead of
+    duplicating literal oklch values, so they adapt automatically.
+  - `hooks/useTheme.ts` — `useSyncExternalStore` over the `<html>` element's own `.dark` class
+    (the single source of truth on the DOM side, not a duplicated React state that could drift),
+    persisted to `localStorage["theme"]`. No Context provider — the only two consumers
+    (`ThemeToggle`, `__root.tsx`'s `<Toaster theme=...>`) sit at unrelated tree positions and a
+    provider would be overkill for one string value.
+  - `components/theme-toggle.tsx` — a Sun/Moon icon button, mounted once in `AppShell`'s header
+    (shared across every route) so the toggle is available everywhere with one addition.
+  - **Flash-of-wrong-theme prevention**: this is a TanStack Start SSR app, so the server always
+    renders `<html class="dark">` (the default) — a returning user who chose "light" would
+    otherwise see a flash of dark before React hydrates and corrects it. Fixed with a blocking
+    inline `<script>` in `__root.tsx`'s `<head>` (before `<HeadContent/>`), which runs synchronously
+    before paint and applies the persisted class immediately; `suppressHydrationWarning` on `<html>`
+    stops React from fighting that pre-hydration DOM mutation when it later reconciles.
+  - **Live-verified against the real running stack** (Docker Desktop had entered its
+    "manually paused" resource-saver state mid-session — recovered via `docker desktop restart`,
+    a safe non-destructive recovery, then `docker compose up -d` brought postgres/backend/frontend
+    back with volumes untouched; both host-runner processes reconnected on their own within
+    seconds): confirmed via `curl` against the real container that the served HTML contains
+    `<html lang="en" class="dark">` + the theme-init script, and that the compiled CSS bundle
+    contains a real `.dark{...}` block and the re-scoped `leaflet-tile` selector. An actual
+    click-through of the toggle (and of Refresh Search creating a real job) was NOT performed — no
+    browser tool was available in this pass — flagged honestly as a verification gap rather than
+    silently claimed complete; the underlying `createPropertyJob` call Refresh Search reuses has
+    already been live-verified multiple times elsewhere in this same session (Launch, Save as
+    recurring), so its correctness is high-confidence even without a fresh click-through.
 - **Known follow-up, not yet done**: `supabase/` (CLI config + old Lovable-era migrations) is dead
   weight left over from the original scaffold — the real schema is `db/migrations/*.sql` via
   node-pg-migrate. Safe to delete, just hasn't been done. Prod deployment target (which host, TLS

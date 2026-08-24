@@ -5,6 +5,7 @@ import { AppSidebar } from "@/components/app-sidebar";
 import { Search, Bell, Command } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { NewCrawlDialog } from "@/components/new-crawl-dialog";
+import { ThemeToggle } from "@/components/theme-toggle";
 
 export function AppShell({
   children,
@@ -57,6 +58,7 @@ export function AppShell({
               </kbd>
             </div>
             <div className="ml-auto flex items-center gap-2">
+              <ThemeToggle />
               <Button variant="ghost" size="icon" className="text-muted-foreground">
                 <Bell className="h-4 w-4" />
               </Button>
