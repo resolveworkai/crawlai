@@ -610,6 +610,27 @@ on this status for a deploy decision.
     unauthenticated request 401s. Verified the built frontend bundle contains "Global Search"/
     "Tower or building name"/"Captured under" (the modal's own strings) — an actual browser click-
     through wasn't performed (no browser tool available this pass), flagged as a real gap.
+- **Global Search unusable while typing during an active job (2026-08-24 fix)**: reported as
+  "not able to type in Global Search while results are capturing." Root cause: `PropertyCrawl`
+  re-renders every 2s while any job is active (`usePropertyJobs`/`usePropertyJob`'s own
+  `refetchInterval`), and `GlobalSearchModal` was mounted with an inline
+  `onClose={() => setGlobalSearchOpen(false)}` — a BRAND NEW function reference on every one of
+  those re-renders. Fixed by wrapping `GlobalSearchModal` in `React.memo` and passing a
+  `useCallback([])`-stabilized `closeGlobalSearch` instead — with both pieces in place, React
+  bails out of `GlobalSearchModal`'s subtree entirely on a poll-triggered re-render (referentially
+  equal props), so the modal's `<input>` is never touched by background polling regardless of how
+  active the job is, guaranteeing typing responsiveness. **Either change alone is insufficient**:
+  `memo()` without a stable callback still re-renders on every poll (the callback prop "changed");
+  a stable callback without `memo()` still re-renders because a plain function component has no
+  memoization by default. `WishlistPanel`/`SchedulesPanel` weren't given the same treatment — they
+  don't hold a text input that needs sustained per-keystroke responsiveness the way Global Search
+  does, so the same class of fix wasn't yet needed there.
+- **"Pages to scrape" default raised 3 → 20 (2026-08-24)**: both the frontend form's initial
+  `useState(20)` and the backend's `createPropertyJobSchema` Zod default (`maxPages` — matters for
+  any direct API caller that omits the field) — kept the two in sync rather than fixing only the
+  UI. Verified live: a job created via a direct API call with `maxPages` omitted now gets
+  `max_pages: 20`. The field's own 1–20 range cap was already 20, so this makes the default equal
+  the ceiling rather than raising the ceiling itself.
 - **Known follow-up, not yet done**: `supabase/` (CLI config + old Lovable-era migrations) is dead
   weight left over from the original scaffold — the real schema is `db/migrations/*.sql` via
   node-pg-migrate. Safe to delete, just hasn't been done. Prod deployment target (which host, TLS

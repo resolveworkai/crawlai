@@ -9,7 +9,7 @@
 // reveals a phone number and builds a wa.me WhatsApp link with a custom message.
 import { createFileRoute } from "@tanstack/react-router";
 import { useQueryClient } from "@tanstack/react-query";
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { memo, useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { AppShell } from "@/components/app-shell";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -247,7 +247,7 @@ function PropertyCrawl() {
   const [purpose, setPurpose] = useState<PropertyPurpose>("buy");
   // Confirmed preference: ready-only by default (see createPropertyJobSchema's own default).
   const [propertyStatus, setPropertyStatus] = useState<PropertyStatus>("ready");
-  const [maxPages, setMaxPages] = useState(3);
+  const [maxPages, setMaxPages] = useState(20);
   const [maxListings, setMaxListings] = useState(100);
   const [detailScrapeTopN, setDetailScrapeTopN] = useState(10);
   const [whatsappTemplate, setWhatsappTemplate] = useState("");
@@ -277,6 +277,14 @@ function PropertyCrawl() {
   const [wishlistOpen, setWishlistOpen] = useState(false);
   const [schedulesOpen, setSchedulesOpen] = useState(false);
   const [globalSearchOpen, setGlobalSearchOpen] = useState(false);
+  // Stable identity (never a new function per render) — GlobalSearchModal is wrapped in
+  // React.memo specifically so an inline arrow function here would defeat the whole point: while
+  // a job is active, usePropertyJobs()/usePropertyJob() poll every 2s and re-render this entire
+  // component, and a fresh onClose reference on every one of those re-renders would make React
+  // treat "props changed" as true and re-render (recreating the underlying <input> DOM node) the
+  // modal every 2s too — which is exactly what was making it feel impossible to type into while
+  // a search was running. Confirmed useCallback([]) — this function never needs to change.
+  const closeGlobalSearch = useCallback(() => setGlobalSearchOpen(false), []);
   // 24h default — a daily re-check is the use case the user described ("fetching the same area
   // listing on daily basis"); the field stays editable per-schedule.
   const [scheduleIntervalHours, setScheduleIntervalHours] = useState(24);
@@ -740,7 +748,7 @@ function PropertyCrawl() {
       </div>
       {wishlistOpen && <WishlistPanel />}
       {schedulesOpen && <SchedulesPanel />}
-      {globalSearchOpen && <GlobalSearchModal onClose={() => setGlobalSearchOpen(false)} />}
+      {globalSearchOpen && <GlobalSearchModal onClose={closeGlobalSearch} />}
 
       {focus && (
         <Card className="mt-4 border-border bg-card p-5">
@@ -1815,7 +1823,12 @@ function SchedulesPanel() {
 // those). Self-contained: owns its own query input + debounce, rather than syncing with the
 // toolbar trigger button — simpler than keeping two components' state in lockstep, and matches
 // WishlistPanel/CompareModal's own self-contained-panel convention in this file.
-function GlobalSearchModal({ onClose }: { onClose: () => void }) {
+//
+// Wrapped in memo() (paired with PropertyCrawl's stable closeGlobalSearch callback, see its own
+// comment) so PropertyCrawl's frequent re-renders while a job is active (usePropertyJobs/
+// usePropertyJob poll every 2s) never touch this component's subtree at all — the fix for "can't
+// type in Global Search while a search is running" (2026-08-24).
+const GlobalSearchModal = memo(function GlobalSearchModal({ onClose }: { onClose: () => void }) {
   const [query, setQuery] = useState("");
   const debouncedQuery = useDebouncedValue(query, 350);
   const trimmed = debouncedQuery.trim();
@@ -1893,7 +1906,7 @@ function GlobalSearchModal({ onClose }: { onClose: () => void }) {
       </div>
     </div>
   );
-}
+});
 
 // One matched listing rendered as a full detail card (a modal's list naturally reads better as
 // vertical cards than the compact table rows the main results view uses) — every field the main

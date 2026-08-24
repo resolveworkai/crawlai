@@ -21,7 +21,7 @@ export const createPropertyJobSchema = z.object({
   // No confirmed server-side URL param for either platform — enforced client-side at capture time
   // against each listing's own is_offplan flag. Defaults to "ready" (confirmed preference).
   propertyStatus: z.enum(["ready", "offplan", "any"]).default("ready"),
-  maxPages: z.coerce.number().int().min(1).max(20).default(3),
+  maxPages: z.coerce.number().int().min(1).max(20).default(20),
   maxListings: z.coerce.number().int().positive().max(500).default(100),
   // How many of the top-ranked (by distress_score) listings get a detail-page visit to reveal a
   // phone number + build a WhatsApp link. 0 disables the detail stage entirely.
