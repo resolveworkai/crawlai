@@ -750,6 +750,26 @@ on this status for a deploy decision.
     only, never a blanket kill of every `python.exe`/`chrome.exe` — see the earlier Chrome-taskkill
     mistake above) via the existing `start-property-host.bat`/`start-noon-host.bat` launchers; stop
     tears the same set down.
+- **Host runners auto-start at Windows login (2026-09-12)**: the Property Research and noon/
+  AliExpress host runners are architecturally host-only, not containerized — both
+  dubizzle.com/propertyfinder.ae and noon.com block plain headless Chromium at the edge, so they
+  only work through the operator's real, visible Chrome on the Windows host (see
+  `start-property-host.bat`/`start-noon-host.bat`'s own comments) — this is a deliberate constraint,
+  not something `docker compose`/the backend container can absorb. Previously nothing restarted them
+  after a reboot/crash, so they could silently sit dead for days (surfaced only via the
+  `RunnerStatusBanner`'s stale-heartbeat warning — see `chrome_health.py`'s
+  `host_runner_status`/`ensure_chrome_running` above). New **`scripts/start-all-hosts.bat`**
+  launches Property first, waits 10s for its Chrome debug port on 9222 to come up, then launches
+  noon — **sequenced, not concurrent, on purpose**: both scripts point at the same
+  `--remote-debugging-port=9222`/`--user-data-dir` (the shared-Chrome design noted above under
+  "Product Research (ecom)"), so launching them at the exact same instant risks two Chrome
+  processes racing to lock the same profile directory; starting one first and letting it open the
+  debug port before the second attaches avoids that race. Once both are up, their runner loops are
+  fully independent and DO run concurrently against the shared Chrome window, unaffected by the
+  startup ordering. A Windows Startup-folder shortcut (`business-scout-hosts.lnk`, added via
+  PowerShell `WScript.Shell`, points at this .bat) now runs it automatically on every login — not
+  committed to the repo (it's a per-machine OS setting, not project source), so a fresh machine
+  needs it recreated once.
 - **Known follow-up, not yet done**: `supabase/` (CLI config + old Lovable-era migrations) is dead
   weight left over from the original scaffold — the real schema is `db/migrations/*.sql` via
   node-pg-migrate. Safe to delete, just hasn't been done. Prod deployment target (which host, TLS
