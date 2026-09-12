@@ -1,5 +1,6 @@
 /** Authored by: Mohit Singh */
 import { pool } from "./pool.js";
+import { attachMappedAges } from "./propertyBuildingAges.js";
 import type {
   PropertyListing,
   PropertyListingRefresh,
@@ -102,22 +103,35 @@ function toListingWithHistory(row: HistoryEnrichedRow): PropertyListingWithHisto
     price_dropped: priceDropped,
     latest_refresh,
     possible_duplicate,
+    // Real defaults — overwritten by attachMappedAges below when a building-name match is found.
+    // Kept here (not on this function alone) so every PropertyListingWithHistory always has these
+    // 3 fields defined, regardless of whether the caller went on to enrich them further.
+    mapped_age_years: null,
+    mapped_age_is_estimated: false,
+    mapped_building_name: null,
   };
 }
 
-// Same as listPropertyListings, enriched via HISTORY_ENRICHMENT_SQL above.
+// Same as listPropertyListings, enriched via HISTORY_ENRICHMENT_SQL above, PLUS a mapped Property
+// Age (2026-08-25, propertyBuildingAges.ts) for any listing missing its own real detail-scraped
+// age_years — matched against the job's own `location` as the region hint.
 export async function listPropertyListingsWithHistory(
   jobId: string,
 ): Promise<PropertyListingWithHistory[]> {
-  const { rows } = await pool.query<HistoryEnrichedRow>(
-    `SELECT pl.*, ${HISTORY_ENRICHMENT_SQL}
+  const { rows } = await pool.query<HistoryEnrichedRow & { job_location: string }>(
+    `SELECT pl.*, cur_job.location AS job_location, ${HISTORY_ENRICHMENT_SQL}
      FROM property_listings pl
      JOIN property_jobs cur_job ON cur_job.id = pl.job_id
      WHERE pl.job_id = $1
      ORDER BY pl.distress_score DESC NULLS LAST, pl.idx ASC`,
     [jobId],
   );
-  return rows.map(toListingWithHistory);
+  const withHistory = rows.map((row) => {
+    const { job_location, ...historyRow } = row;
+    return { ...toListingWithHistory(historyRow), job_location };
+  });
+  const withAges = await attachMappedAges(withHistory);
+  return withAges.map(({ job_location: _jobLocation, ...listing }) => listing);
 }
 
 // A listing enriched exactly like PropertyListingWithHistory, PLUS which job/platform/search it
@@ -142,6 +156,15 @@ export async function searchPropertyListingsGlobally(
   query: string,
   limit = 50,
 ): Promise<PropertySearchResult[]> {
+  // The SAME real-world listing gets captured again every time a job/scheduled re-search covers
+  // it, so a naive query returns the same unit N times (once per capture). Fetch a wider window
+  // than `limit` so deduping (below) doesn't leave fewer than `limit` UNIQUE listings on screen,
+  // then collapse to one row per `listing_url` — the stable cross-job identity already used
+  // elsewhere in this codebase for price-drop/duplicate detection — keeping the most recent
+  // capture (rows already arrive ORDER BY created_at DESC, so "first seen" == "most recent"). A
+  // listing with no listing_url (never had one captured) can't be deduped against anything else
+  // and is always kept as its own result.
+  const fetchLimit = Math.min(limit * 4, 300);
   const { rows } = await pool.query<
     HistoryEnrichedRow & { platform: PropertyPlatform; job_location: string }
   >(
@@ -152,12 +175,20 @@ export async function searchPropertyListingsGlobally(
      WHERE pl.title ILIKE $1 OR pl.community ILIKE $1 OR pl.location_text ILIKE $1
      ORDER BY pl.created_at DESC
      LIMIT $2`,
-    [`%${query}%`, limit],
+    [`%${query}%`, fetchLimit],
   );
-  return rows.map((row) => {
+  const withHistory = rows.map((row) => {
     const { platform, job_location, ...historyRow } = row;
     return { ...toListingWithHistory(historyRow), platform, job_location };
   });
+  const seenUrls = new Set<string>();
+  const deduped = withHistory.filter((r) => {
+    if (r.listing_url === null) return true;
+    if (seenUrls.has(r.listing_url)) return false;
+    seenUrls.add(r.listing_url);
+    return true;
+  });
+  return attachMappedAges(deduped.slice(0, limit));
 }
 
 export async function listTopPropertyListings(

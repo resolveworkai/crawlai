@@ -19,6 +19,9 @@ import { requireAuth, requireRole } from "../middleware/auth.js";
 import { validate } from "../middleware/validate.js";
 import {
   addToWishlistSchema,
+  buildingAgeIdParamsSchema,
+  buildingAgeRegionQuerySchema,
+  bulkImportBuildingAgesSchema,
   createPropertyJobSchema,
   createPropertyJobScheduleSchema,
   listingRefreshStatusParamsSchema,
@@ -29,6 +32,7 @@ import {
   setPropertyJobScheduleEnabledSchema,
   wishlistItemIdParamsSchema,
   type AddToWishlistInput,
+  type BulkImportBuildingAgesInput,
   type CreatePropertyJobInput,
   type CreatePropertyJobScheduleInput,
 } from "../schemas/propertyCrawl.js";
@@ -52,6 +56,15 @@ import {
   listPropertyListingsWithHistory,
   searchPropertyListingsGlobally,
 } from "../db/propertyListings.js";
+import {
+  bulkUpsertBuildingAges,
+  deleteBuildingAge,
+  deleteBuildingAgeRegion,
+  invalidateBuildingAgeCache,
+  listBuildingAgeRegions,
+  listBuildingAges,
+} from "../db/propertyBuildingAges.js";
+import { parseBuildingAgeTable } from "../services/buildingAgeTableParser.js";
 import {
   createListingRefresh,
   findListingRefreshById,
@@ -398,6 +411,75 @@ propertyCrawlRouter.delete(
   async (req, res) => {
     const removed = await deletePropertyJobSchedule(req.params.id as string);
     if (!removed) throw new NotFoundError("Schedule not found");
+    res.status(204).send();
+  },
+);
+
+// --- Region building-age reference table (2026-08-25) --------------------------------------------
+// Manually curated: the user supplies a real building-name -> completion-year table per region
+// (pasted text, tab-separated or space-aligned — see buildingAgeTableParser.ts), used to fill in a
+// "Property Age" for listings that were never individually detail-scraped.
+
+propertyCrawlRouter.get(
+  "/property-crawl/building-ages/regions",
+  requireAuth,
+  async (_req, res) => {
+    const regions = await listBuildingAgeRegions();
+    res.json({ regions });
+  },
+);
+
+propertyCrawlRouter.get(
+  "/property-crawl/building-ages",
+  requireAuth,
+  validate(buildingAgeRegionQuerySchema, "query"),
+  async (req, res) => {
+    const { region } = req.validatedQuery as unknown as { region?: string };
+    const buildings = await listBuildingAges(region);
+    res.json({ buildings });
+  },
+);
+
+propertyCrawlRouter.post(
+  "/property-crawl/building-ages/bulk-import",
+  requireAuth,
+  requireRole("operator"),
+  validate(bulkImportBuildingAgesSchema),
+  async (req, res) => {
+    const { region, rawText } = req.body as BulkImportBuildingAgesInput;
+    const entries = parseBuildingAgeTable(rawText);
+    if (entries.length === 0) {
+      throw new ValidationError(
+        "Couldn't find any recognizable rows — each line needs a building name and either a " +
+          "completion year (e.g. 2015, 2015*, 2015/16) or N/V.",
+      );
+    }
+    const imported = await bulkUpsertBuildingAges(region, entries);
+    invalidateBuildingAgeCache();
+    res.status(201).json({ imported, skipped: 0, region });
+  },
+);
+
+propertyCrawlRouter.delete(
+  "/property-crawl/building-ages/region/:region",
+  requireAuth,
+  requireRole("operator"),
+  async (req, res) => {
+    const removed = await deleteBuildingAgeRegion(req.params.region as string);
+    invalidateBuildingAgeCache();
+    res.json({ removed });
+  },
+);
+
+propertyCrawlRouter.delete(
+  "/property-crawl/building-ages/:id",
+  requireAuth,
+  requireRole("operator"),
+  validate(buildingAgeIdParamsSchema, "params"),
+  async (req, res) => {
+    const removed = await deleteBuildingAge(req.params.id as string);
+    if (!removed) throw new NotFoundError("Building age entry not found");
+    invalidateBuildingAgeCache();
     res.status(204).send();
   },
 );

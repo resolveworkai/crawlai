@@ -8,6 +8,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, fileUrl } from "@/lib/api-client";
 import type {
   PropertyAnalysis,
+  PropertyBuildingAge,
   PropertyJob,
   PropertyJobSchedule,
   PropertyListingRefresh,
@@ -33,6 +34,9 @@ export const propertyKeys = {
     [...propertyKeys.all, "refresh", listingId, refreshId] as const,
   schedules: () => [...propertyKeys.all, "schedules"] as const,
   search: (query: string) => [...propertyKeys.all, "search", query] as const,
+  buildingAgeRegions: () => [...propertyKeys.all, "building-age-regions"] as const,
+  buildingAges: (region?: string) =>
+    [...propertyKeys.all, "building-ages", region ?? "__all__"] as const,
 };
 
 interface CreatePropertyJobInput {
@@ -294,5 +298,83 @@ export function usePropertySearch(query: string, enabled: boolean) {
         )
       ).results,
     enabled: enabled && query.trim().length >= 2,
+  });
+}
+
+// --- Region building-age reference table (manually curated, per-region) -------------------------
+
+export function usePropertyBuildingAgeRegions() {
+  return useQuery({
+    queryKey: propertyKeys.buildingAgeRegions(),
+    queryFn: async () =>
+      (
+        await api.get<{ regions: { region: string; count: number }[] }>(
+          "/property-crawl/building-ages/regions",
+        )
+      ).regions,
+  });
+}
+
+export function usePropertyBuildingAges(region: string | undefined) {
+  return useQuery({
+    queryKey: propertyKeys.buildingAges(region),
+    queryFn: async () =>
+      (
+        await api.get<{ buildings: PropertyBuildingAge[] }>(
+          `/property-crawl/building-ages${region ? `?region=${encodeURIComponent(region)}` : ""}`,
+        )
+      ).buildings,
+  });
+}
+
+export function useBulkImportBuildingAges() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (input: { region: string; rawText: string }) =>
+      api.post<{ imported: number; skipped: number; region: string }>(
+        "/property-crawl/building-ages/bulk-import",
+        input,
+      ),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: propertyKeys.buildingAgeRegions() });
+      void queryClient.invalidateQueries({
+        queryKey: [...propertyKeys.all, "building-ages"],
+      });
+      // The mapped-age enrichment on the main results/search views is computed server-side from
+      // this same table (attachMappedAges, TTL-cached there too) — a fresh import should show up
+      // immediately in whatever job/search view is currently open, not just the management panel.
+      void queryClient.invalidateQueries({ queryKey: propertyKeys.list() });
+      void queryClient.invalidateQueries({ queryKey: [...propertyKeys.all, "results"] });
+      void queryClient.invalidateQueries({ queryKey: [...propertyKeys.all, "search"] });
+    },
+  });
+}
+
+export function useDeleteBuildingAgeRegion() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (region: string) =>
+      api.delete<{ removed: number }>(
+        `/property-crawl/building-ages/region/${encodeURIComponent(region)}`,
+      ),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: propertyKeys.buildingAgeRegions() });
+      void queryClient.invalidateQueries({ queryKey: [...propertyKeys.all, "building-ages"] });
+      void queryClient.invalidateQueries({ queryKey: [...propertyKeys.all, "results"] });
+      void queryClient.invalidateQueries({ queryKey: [...propertyKeys.all, "search"] });
+    },
+  });
+}
+
+export function useDeleteBuildingAge() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.delete<void>(`/property-crawl/building-ages/${id}`),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: propertyKeys.buildingAgeRegions() });
+      void queryClient.invalidateQueries({ queryKey: [...propertyKeys.all, "building-ages"] });
+      void queryClient.invalidateQueries({ queryKey: [...propertyKeys.all, "results"] });
+      void queryClient.invalidateQueries({ queryKey: [...propertyKeys.all, "search"] });
+    },
   });
 }

@@ -569,6 +569,27 @@ export interface PropertyListingWithHistory extends PropertyListing {
   price_dropped: boolean;
   latest_refresh: PropertyListingRefresh | null;
   possible_duplicate: PropertyPossibleDuplicate | null;
+  // Region building-age reference match (2026-08-25, see propertyBuildingAges.ts) — only ever
+  // populated when the listing's own real `age_years` is null (a mapped estimate is never shown
+  // over a real detail-scraped value). null when no building in the reference table matched this
+  // listing's title/community/location_text.
+  mapped_age_years: number | null;
+  mapped_age_is_estimated: boolean;
+  mapped_building_name: string | null;
+}
+
+// A manually-curated building-name -> completion-year reference row, scoped to a region
+// (community/area) — see db/migrations/1786300000000_property-building-ages.sql for the full
+// rationale. Age is always derived at read time (current_year - completion_year), never stored,
+// so it can't go stale across calendar years.
+export interface PropertyBuildingAge {
+  id: string;
+  region: string;
+  building_name: string;
+  completion_year: number | null;
+  is_estimated: boolean;
+  created_at: Date;
+  updated_at: Date;
 }
 
 // --- Marketing / Messaging (see md/MARKETING.md + db/migrations/*marketing.sql) ---

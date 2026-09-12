@@ -543,6 +543,23 @@ export interface PropertyListingWithHistory extends PropertyListing {
   price_dropped: boolean;
   latest_refresh: PropertyListingRefresh | null;
   possible_duplicate: PropertyPossibleDuplicate | null;
+  // Region building-age reference match (2026-08-25) — only ever populated when the listing's own
+  // real age_years is null (a mapped estimate never overrides a real detail-scraped value).
+  mapped_age_years: number | null;
+  mapped_age_is_estimated: boolean;
+  mapped_building_name: string | null;
+}
+
+// A manually-curated building-name -> completion-year reference row, scoped to a region. Age is
+// always derived at read time (current_year - completion_year), never stored.
+export interface PropertyBuildingAge {
+  id: string;
+  region: string;
+  building_name: string;
+  completion_year: number | null;
+  is_estimated: boolean;
+  created_at: string;
+  updated_at: string;
 }
 
 // A PropertyListingWithHistory PLUS which job/platform/search it was captured under — only

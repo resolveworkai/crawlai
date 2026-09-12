@@ -712,6 +712,44 @@ on this status for a deploy decision.
     discipline as every other restart this session).
   - Tests: 8 new cases in `test_property_adapters.py` (default/newest/price-low/price-high × both
     adapters) — full adapter suite 42/42 passing, full property suite 117/117.
+- **Region building-age reference table (2026-08-25, `db/migrations/1786300000000_property-building-ages.sql`)**:
+  a real per-listing `age_years` only ever exists for a job's `detail_scrape_top_n` highest-scoring
+  listings — most captured rows never get one. New `property_building_ages` table (case-insensitive
+  unique on `(region, building_name)`, so re-pasting the same region's table upserts rather than
+  duplicates) lets the operator paste a real building-name→completion-year reference table per region
+  (starting with Dubai Sports City, 107 real buildings) once; every listing whose title/community/
+  location_text contains a known building name then gets a **mapped** age even without its own detail
+  scrape. `completion_year` is the stored fact — age is always derived at READ time
+  (`current_year - completion_year`), never stored, so it can't go stale across calendar years.
+  `is_estimated` (source row marked with `*` or a year range like "2015/16") surfaces as an
+  approximate "~" age in the UI rather than an exact one; NULL `completion_year` (source's "N/V"
+  rows) stays genuinely unknown, never guessed. A listing's own real `age_years` always wins — the
+  mapped estimate (`mapped_age_years`/`mapped_age_is_estimated`/`mapped_building_name` on
+  `PropertyListingWithHistory`) is only ever populated when the real field is null.
+  - **Parsing** (`backend/api/src/services/buildingAgeTableParser.ts`): tab-separated or
+    loosely space-aligned pasted text, one building per line; a bulk-import 400s with a specific
+    message when zero recognizable rows are found rather than silently importing nothing.
+  - **API**: `GET /property-crawl/building-ages/regions`, `GET /property-crawl/building-ages?region=`,
+    `POST /property-crawl/building-ages/bulk-import` (operator+), `DELETE
+    /property-crawl/building-ages/region/:region` (operator+), `DELETE
+    /property-crawl/building-ages/:id` (operator+) — all in `routes/propertyCrawl.ts`, backed by
+    `db/propertyBuildingAges.ts` (own in-process cache, invalidated on every import/delete).
+  - **`capture.py` client-side bedroom exact-match filter**: confirmed live 2026-08-25 that
+    propertyfinder can leak studio listings into a 2-bedroom search once "Price low to high" sort is
+    selected, even with `bf=2&bt=2` set — re-enforced client-side the same defensive way as the
+    existing bathroom floor (skips only when the card's own bedroom count is confidently known and
+    doesn't match; a studio search is exempt since a studio card's own bedroom count is already that
+    search's target).
+  - **Global command search** (`src/components/global-command-search.tsx`): replaced the old static,
+    non-functional search-box placeholder in `AppShell`'s header (`Search businesses, jobs, fields…`
+    with a decorative ⌘K badge that did nothing) with a real `GlobalCommandSearch` modal +
+    `GlobalSearchTrigger`, wired into `app-shell.tsx`.
+  - **`scripts/restart-all.bat`/`scripts/stop-all.bat`**: one-click dev-environment scripts — restart
+    ensures Docker Desktop is running, rebuilds backend+frontend images, applies pending migrations,
+    recreates containers, then restarts both host-runner processes (matched by exact command line
+    only, never a blanket kill of every `python.exe`/`chrome.exe` — see the earlier Chrome-taskkill
+    mistake above) via the existing `start-property-host.bat`/`start-noon-host.bat` launchers; stop
+    tears the same set down.
 - **Known follow-up, not yet done**: `supabase/` (CLI config + old Lovable-era migrations) is dead
   weight left over from the original scaffold — the real schema is `db/migrations/*.sql` via
   node-pg-migrate. Safe to delete, just hasn't been done. Prod deployment target (which host, TLS
@@ -753,7 +791,7 @@ Every list/single-resource endpoint wraps its payload in a named envelope (`{job
 | `/exports` | `GET /` (history), `POST /` (generate xlsx/csv/json, operator+), `GET /:id/download` |
 | `/api/v1` | `GET /businesses` (api-key auth, rate-limited 120/min/key), `GET /openapi.json` (unauthenticated) |
 | `/ocr-crawl` | `POST /jobs` (operator+, 409 single-flight), `GET /jobs`, `GET /jobs/:id` (+progress), `GET /jobs/:id/results`, `GET /jobs/:id/export?format=csv\|xlsx`, `GET /jobs/:id/images/*splat` (screenshot), `DELETE /jobs/:id` (operator+) |
-| `/property-crawl` | `POST /jobs` (operator+, queues — never rejects), `POST /jobs/:id/retry` (operator+, resumable, capped at 3), `GET /jobs`, `GET /jobs/:id` (+progress), `GET /jobs/:id/results` (price-drop-enriched), `GET /jobs/:id/analysis`, `GET /jobs/:id/export?format=csv\|xlsx\|json`, `GET /jobs/:id/images/*splat` (screenshot), `DELETE /jobs/:id` (operator+), `GET /wishlist`, `POST /wishlist` (operator+), `DELETE /wishlist/:id` (operator+), `POST /listings/:id/refresh` (operator+), `GET /listings/:id/refresh/:refreshId` |
+| `/property-crawl` | `POST /jobs` (operator+, queues — never rejects), `POST /jobs/:id/retry` (operator+, resumable, capped at 3), `GET /jobs`, `GET /jobs/:id` (+progress), `GET /jobs/:id/results` (price-drop-enriched), `GET /jobs/:id/analysis`, `GET /jobs/:id/export?format=csv\|xlsx\|json`, `GET /jobs/:id/images/*splat` (screenshot), `DELETE /jobs/:id` (operator+), `GET /wishlist`, `POST /wishlist` (operator+), `DELETE /wishlist/:id` (operator+), `POST /listings/:id/refresh` (operator+), `GET /listings/:id/refresh/:refreshId`, `GET /building-ages/regions`, `GET /building-ages?region=`, `POST /building-ages/bulk-import` (operator+), `DELETE /building-ages/region/:region` (operator+), `DELETE /building-ages/:id` (operator+) |
 | `/health` | `GET /` (checks DB) |
 
 ## Project convention — approved-plan archival (REQUIREMENT)

@@ -43,12 +43,17 @@ import {
   propertyImageUrl,
   propertyKeys,
   useAddToWishlist,
+  useBulkImportBuildingAges,
   useCreatePropertyJob,
   useCreatePropertyJobSchedule,
+  useDeleteBuildingAge,
+  useDeleteBuildingAgeRegion,
   useDeletePropertyJob,
   useDeletePropertyJobSchedule,
   useListingRefreshStatus,
   usePropertyAnalysis,
+  usePropertyBuildingAgeRegions,
+  usePropertyBuildingAges,
   usePropertyJob,
   usePropertyJobs,
   usePropertyJobSchedules,
@@ -66,6 +71,7 @@ import {
   AlertTriangle,
   Bath,
   Bed,
+  Building2,
   CalendarClock,
   ChevronDown,
   Download,
@@ -230,6 +236,27 @@ function formatMoney(v: string | number | null, currency: string | null): string
   return n === null ? "—" : `${currency ?? "AED"} ${n.toLocaleString()}`;
 }
 
+// Property Age — real (detail-page-scraped) age_years always wins when present; otherwise falls
+// back to the region building-age reference table's mapped estimate (see
+// backend/api/src/db/propertyBuildingAges.ts). The mapped value is prefixed "~" and its title
+// names the matched building, so it's visually distinct from a confirmed real age at a glance.
+function propertyAgeDisplay(l: {
+  age_years: number | null;
+  mapped_age_years?: number | null;
+  mapped_age_is_estimated?: boolean;
+  mapped_building_name?: string | null;
+}): { text: string; title?: string } {
+  if (l.age_years !== null) return { text: `${l.age_years} yrs` };
+  if (l.mapped_age_years != null) {
+    const est = l.mapped_age_is_estimated ? " (estimated completion year)" : "";
+    return {
+      text: `~${l.mapped_age_years} yrs`,
+      title: `Estimated from building-age reference: ${l.mapped_building_name ?? "matched building"}${est}`,
+    };
+  }
+  return { text: "—" };
+}
+
 type SortKey =
   "distress_score" | "price" | "price_per_sqft" | "area_sqft" | "listed_days_ago" | "average_rent";
 
@@ -297,6 +324,8 @@ function PropertyCrawl() {
   const [compareOpen, setCompareOpen] = useState(false);
   const [wishlistOpen, setWishlistOpen] = useState(false);
   const [schedulesOpen, setSchedulesOpen] = useState(false);
+  const [buildingAgesOpen, setBuildingAgesOpen] = useState(false);
+  const { data: buildingAgeRegions = [] } = usePropertyBuildingAgeRegions();
   const [globalSearchOpen, setGlobalSearchOpen] = useState(false);
   // Stable identity (never a new function per render) — GlobalSearchModal is wrapped in
   // React.memo specifically so an inline arrow function here would defeat the whole point: while
@@ -784,9 +813,20 @@ function PropertyCrawl() {
           <Search className="h-4 w-4" />
           Global Search
         </button>
+        <button
+          onClick={() => setBuildingAgesOpen((v) => !v)}
+          className="flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground"
+        >
+          <Building2 className="h-4 w-4" />
+          Property Age Data{buildingAgeRegions.length > 0 ? ` (${buildingAgeRegions.length})` : ""}
+          <ChevronDown
+            className={`h-3.5 w-3.5 transition-transform ${buildingAgesOpen ? "rotate-180" : ""}`}
+          />
+        </button>
       </div>
       {wishlistOpen && <WishlistPanel />}
       {schedulesOpen && <SchedulesPanel />}
+      {buildingAgesOpen && <BuildingAgesPanel />}
       {globalSearchOpen && <GlobalSearchModal onClose={closeGlobalSearch} />}
 
       {focus && (
@@ -1031,12 +1071,7 @@ function PropertyCrawl() {
                       sortKey={sortKey}
                       onSort={setSortKey}
                     />
-                    <SortHeader
-                      label="Listed"
-                      col="listed_days_ago"
-                      sortKey={sortKey}
-                      onSort={setSortKey}
-                    />
+                    <th className="px-2 py-2 text-left font-medium">Property Age</th>
                     <SortHeader
                       label="Score"
                       col="distress_score"
@@ -1487,8 +1522,8 @@ function ResultRow({
           <span className="text-muted-foreground">—</span>
         )}
       </td>
-      <td className="px-2 py-2 text-xs">
-        {l.listed_days_ago !== null ? `${l.listed_days_ago}d ago` : "—"}
+      <td className="px-2 py-2 text-xs" title={propertyAgeDisplay(l).title}>
+        {propertyAgeDisplay(l).text}
       </td>
       <td className="px-2 py-2">
         {score !== null ? (
@@ -1606,7 +1641,7 @@ function CompareModal({
     { label: "Type", render: (l) => l.property_type ?? "—" },
     { label: "Community", render: (l) => l.community ?? l.location_text ?? "—" },
     { label: "Status", render: (l) => (l.is_offplan ? "Off-plan" : "Ready") },
-    { label: "Age", render: (l) => (l.age_years !== null ? `${l.age_years} yrs` : "—") },
+    { label: "Property Age", render: (l) => propertyAgeDisplay(l).text },
     {
       label: "Avg. rent",
       render: (l) =>
@@ -1618,10 +1653,6 @@ function CompareModal({
         l.average_rent !== null ? `${formatMoney(l.average_rent, l.currency)}/yr` : "—",
     },
     {
-      label: "Listed",
-      render: (l) => (l.listed_days_ago !== null ? `${l.listed_days_ago}d ago` : "—"),
-    },
-    {
       label: "Score",
       render: (l) =>
         l.distress_score !== null
@@ -1631,8 +1662,11 @@ function CompareModal({
     { label: "Verified", render: (l) => (l.verified ? "Yes" : "—") },
   ];
 
+  // z-[60], not z-40: every shadcn overlay in src/components/ui/* (Popover/Select/DropdownMenu/
+  // Tooltip/etc.) uses z-50 — a lower z-index here let a still-mounted library overlay elsewhere on
+  // the page render on top of this one and silently swallow every click meant for it.
   return (
-    <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/50 p-4">
+    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 p-4">
       <div className="max-h-[85vh] w-full max-w-4xl overflow-auto rounded-lg border border-border bg-card p-4">
         <div className="mb-3 flex items-center justify-between">
           <h3 className="flex items-center gap-1.5 text-sm font-semibold">
@@ -1858,6 +1892,154 @@ function SchedulesPanel() {
   );
 }
 
+// Property Age reference data — manually curated per region: the user pastes a building-name ->
+// completion-year table (e.g. copied from a spreadsheet), and it fills in the Property Age column
+// for any listing that was never individually detail-scraped (real age_years is detail-page-only,
+// sparse). See backend/api/src/db/propertyBuildingAges.ts / buildingAgeTableParser.ts.
+function BuildingAgesPanel() {
+  const { data: regions = [], isLoading: regionsLoading } = usePropertyBuildingAgeRegions();
+  const [expandedRegion, setExpandedRegion] = useState<string | null>(null);
+  const [importRegion, setImportRegion] = useState("");
+  const [importText, setImportText] = useState("");
+  const bulkImport = useBulkImportBuildingAges();
+  const deleteRegion = useDeleteBuildingAgeRegion();
+
+  function handleImport() {
+    const region = importRegion.trim();
+    if (!region) {
+      toast.error('Enter a region name first (e.g. "Dubai Sports City")');
+      return;
+    }
+    if (!importText.trim()) {
+      toast.error("Paste the building-name / completion-year table first");
+      return;
+    }
+    bulkImport.mutate(
+      { region, rawText: importText },
+      {
+        onSuccess: ({ imported }) => {
+          toast.success(
+            `Imported ${imported} building${imported === 1 ? "" : "s"} for "${region}"`,
+          );
+          setImportText("");
+        },
+        onError: (e) => toast.error(e.message),
+      },
+    );
+  }
+
+  return (
+    <Card className="mt-2 border-border bg-card p-4">
+      <div className="grid gap-3 sm:grid-cols-[1fr_2fr]">
+        <Input
+          value={importRegion}
+          onChange={(e) => setImportRegion(e.target.value)}
+          placeholder='Region (e.g. "Dubai Sports City")'
+          className="h-9 text-xs"
+        />
+        <div className="flex flex-col gap-2 sm:flex-row">
+          <Textarea
+            value={importText}
+            onChange={(e) => setImportText(e.target.value)}
+            placeholder="Paste the building name / completion year table here — tab-separated (from a spreadsheet) or space-aligned both work. e.g.:&#10;1&#9;Amal Tower&#9;2025&#9;1 yr&#10;2&#9;Golf Tower&#9;2010&#9;16 yrs"
+            className="min-h-20 flex-1 text-xs"
+          />
+          <Button
+            onClick={handleImport}
+            disabled={bulkImport.isPending}
+            size="sm"
+            className="h-9 shrink-0 self-start"
+          >
+            {bulkImport.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : "Import"}
+          </Button>
+        </div>
+      </div>
+
+      <div className="mt-4 border-t border-border pt-3">
+        {regionsLoading && <p className="text-xs text-muted-foreground">Loading…</p>}
+        {!regionsLoading && regions.length === 0 && (
+          <p className="text-xs text-muted-foreground">
+            No building-age data yet — paste a region's table above to fill in Property Age for
+            listings that were never individually detail-scraped.
+          </p>
+        )}
+        {regions.length > 0 && (
+          <div className="grid gap-1.5">
+            {regions.map((r) => (
+              <div key={r.region}>
+                <div className="flex items-center justify-between gap-3 rounded border border-border px-3 py-2 text-xs">
+                  <button
+                    onClick={() => setExpandedRegion((cur) => (cur === r.region ? null : r.region))}
+                    className="flex min-w-0 flex-1 items-center gap-1.5 text-left hover:text-foreground"
+                  >
+                    <ChevronDown
+                      className={`h-3 w-3 shrink-0 transition-transform ${expandedRegion === r.region ? "rotate-180" : ""}`}
+                    />
+                    <span className="truncate font-medium">{r.region}</span>
+                    <span className="shrink-0 text-[11px] text-muted-foreground">
+                      {r.count} building{r.count === 1 ? "" : "s"}
+                    </span>
+                  </button>
+                  <button
+                    onClick={() => {
+                      deleteRegion.mutate(r.region, {
+                        onSuccess: ({ removed }) =>
+                          toast.success(`Removed ${removed} entries for "${r.region}"`),
+                        onError: (e) => toast.error(e.message),
+                      });
+                      if (expandedRegion === r.region) setExpandedRegion(null);
+                    }}
+                    disabled={deleteRegion.isPending}
+                    title={`Delete all building-age data for ${r.region}`}
+                  >
+                    <Trash2 className="h-3.5 w-3.5 shrink-0 text-muted-foreground hover:text-destructive" />
+                  </button>
+                </div>
+                {expandedRegion === r.region && <BuildingAgeRegionDetail region={r.region} />}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </Card>
+  );
+}
+
+function BuildingAgeRegionDetail({ region }: { region: string }) {
+  const { data: buildings = [], isLoading } = usePropertyBuildingAges(region);
+  const deleteOne = useDeleteBuildingAge();
+
+  if (isLoading) return <p className="mt-1.5 px-3 text-xs text-muted-foreground">Loading…</p>;
+
+  return (
+    <div className="mt-1.5 max-h-64 overflow-y-auto rounded border border-border">
+      <table className="w-full text-xs">
+        <tbody className="divide-y divide-border">
+          {buildings.map((b) => (
+            <tr key={b.id}>
+              <td className="px-3 py-1.5">{b.building_name}</td>
+              <td className="px-3 py-1.5 text-muted-foreground">
+                {b.completion_year !== null
+                  ? `${b.completion_year}${b.is_estimated ? " (est.)" : ""}`
+                  : "unknown year"}
+              </td>
+              <td className="px-3 py-1.5 text-right">
+                <button
+                  onClick={() => deleteOne.mutate(b.id, { onError: (e) => toast.error(e.message) })}
+                  disabled={deleteOne.isPending}
+                  title="Delete this entry"
+                >
+                  <Trash2 className="h-3 w-3 text-muted-foreground hover:text-destructive" />
+                </button>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 // Global search — across EVERY captured listing (not scoped to one job), matched against the
 // listing's title/community/location_text (a tower/building name usually shows up in one of
 // those). Self-contained: owns its own query input + debounce, rather than syncing with the
@@ -1880,8 +2062,11 @@ const GlobalSearchModal = memo(function GlobalSearchModal({ onClose }: { onClose
   );
   const addToWishlist = useAddToWishlist();
 
+  // z-[60], not z-40 — see CompareModal's identical comment: every shadcn overlay in
+  // src/components/ui/* is z-50, and a still-mounted one elsewhere on the page (a Popover/Select
+  // left open) would otherwise render on top of this and swallow every click into the input.
   return (
-    <div className="fixed inset-0 z-40 flex items-start justify-center bg-black/50 p-4 pt-[8vh]">
+    <div className="fixed inset-0 z-[60] flex items-start justify-center bg-black/50 p-4 pt-[8vh]">
       <div className="max-h-[80vh] w-full max-w-3xl overflow-hidden rounded-lg border border-border bg-card">
         <div className="flex items-center gap-2 border-b border-border p-3">
           <Search className="h-4 w-4 shrink-0 text-muted-foreground" />
@@ -1926,10 +2111,11 @@ const GlobalSearchModal = memo(function GlobalSearchModal({ onClose }: { onClose
               {isFetching && !isLoading && (
                 <p className="text-[11px] text-muted-foreground">Updating…</p>
               )}
-              {results.map((l) => (
+              {results.map((l, index) => (
                 <GlobalSearchResultCard
                   key={l.id}
                   l={l}
+                  defaultExpanded={index === 0}
                   wishlisted={l.listing_url !== null && wishlistedUrls.has(l.listing_url)}
                   onAddToWishlist={() =>
                     addToWishlist.mutate(l.id, {
@@ -1955,14 +2141,19 @@ const GlobalSearchModal = memo(function GlobalSearchModal({ onClose }: { onClose
 function GlobalSearchResultCard({
   l,
   wishlisted,
+  defaultExpanded,
   onAddToWishlist,
 }: {
   l: PropertySearchResult;
   wishlisted: boolean;
+  defaultExpanded: boolean;
   onAddToWishlist: () => void;
 }) {
   const thumb = l.image_urls[0] ?? propertyImageUrl(l.job_id, l.source_images[0]);
   const priorPrice = l.previous_price ?? l.latest_refresh?.old_price ?? null;
+  // Only the first result opens by default (the strongest match) — every other card starts
+  // collapsed to keep a long results list scannable; the header row toggles it either way.
+  const [expanded, setExpanded] = useState(defaultExpanded);
 
   return (
     <div
@@ -1980,7 +2171,18 @@ function GlobalSearchResultCard({
         </span>
       )}
       <div className="min-w-0 flex-1">
-        <div className="flex flex-wrap items-center gap-1.5">
+        <div
+          onClick={() => setExpanded((v) => !v)}
+          role="button"
+          tabIndex={0}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" || e.key === " ") {
+              e.preventDefault();
+              setExpanded((v) => !v);
+            }
+          }}
+          className="flex cursor-pointer flex-wrap items-center gap-1.5"
+        >
           {l.listing_url ? (
             <a
               href={l.listing_url}
@@ -2024,7 +2226,8 @@ function GlobalSearchResultCard({
             </span>
           )}
           <button
-            onClick={() => {
+            onClick={(e) => {
+              e.stopPropagation();
               if (!wishlisted) onAddToWishlist();
             }}
             title={wishlisted ? "In your wishlist" : "Save to wishlist"}
@@ -2034,103 +2237,112 @@ function GlobalSearchResultCard({
               className={`h-3.5 w-3.5 ${wishlisted ? "fill-destructive text-destructive" : "text-muted-foreground hover:text-destructive"}`}
             />
           </button>
+          <ChevronDown
+            className={`h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform ${expanded ? "rotate-180" : ""}`}
+          />
         </div>
 
         <p className="mt-0.5 truncate text-xs text-muted-foreground">
           Captured under "{l.job_location}" search · {timeAgo(l.created_at)}
         </p>
 
-        <div className="mt-2 grid grid-cols-2 gap-x-4 gap-y-1 text-xs sm:grid-cols-4">
-          <div>
-            <div className="text-[10px] uppercase text-muted-foreground">Price</div>
-            <div className={l.price_dropped ? "font-medium text-success" : undefined}>
-              {formatMoney(l.price, l.currency)}
+        {expanded && (
+          <>
+            <div className="mt-2 grid grid-cols-2 gap-x-4 gap-y-1 text-xs sm:grid-cols-4">
+              <div>
+                <div className="text-[10px] uppercase text-muted-foreground">Price</div>
+                <div className={l.price_dropped ? "font-medium text-success" : undefined}>
+                  {formatMoney(l.price, l.currency)}
+                </div>
+                {l.price_dropped && priorPrice !== null && (
+                  <div className="text-[10px] text-muted-foreground line-through">
+                    {formatMoney(priorPrice, l.currency)}
+                  </div>
+                )}
+              </div>
+              <div>
+                <div className="text-[10px] uppercase text-muted-foreground">AED/sqft</div>
+                <div>
+                  {l.price_per_sqft !== null ? Number(l.price_per_sqft).toLocaleString() : "—"}
+                </div>
+              </div>
+              <div>
+                <div className="text-[10px] uppercase text-muted-foreground">Area</div>
+                <div>
+                  {l.area_sqft !== null ? `${Number(l.area_sqft).toLocaleString()} sqft` : "—"}
+                </div>
+              </div>
+              <div>
+                <div className="text-[10px] uppercase text-muted-foreground">Beds/Baths</div>
+                <div className="inline-flex items-center gap-2">
+                  <span className="inline-flex items-center gap-0.5">
+                    <Bed className="h-3 w-3 text-muted-foreground" />
+                    {l.bedrooms ?? "—"}
+                  </span>
+                  <span className="inline-flex items-center gap-0.5">
+                    <Bath className="h-3 w-3 text-muted-foreground" />
+                    {l.bathrooms ?? "—"}
+                  </span>
+                </div>
+              </div>
+              <div>
+                <div className="text-[10px] uppercase text-muted-foreground">Rented for</div>
+                <div>
+                  {l.average_rent !== null ? `${formatMoney(l.average_rent, l.currency)}/yr` : "—"}
+                </div>
+              </div>
+              <div>
+                <div className="text-[10px] uppercase text-muted-foreground">Property Age</div>
+                <div title={propertyAgeDisplay(l).title}>{propertyAgeDisplay(l).text}</div>
+              </div>
+              <div>
+                <div className="text-[10px] uppercase text-muted-foreground">Score</div>
+                <div>
+                  {l.distress_score !== null ? l.distress_score.toFixed(0) : "—"}
+                  {l.distress_confidence !== null && (
+                    <span className="text-[10px] text-muted-foreground">
+                      {" "}
+                      ({l.distress_confidence.toFixed(0)}% conf.)
+                    </span>
+                  )}
+                </div>
+              </div>
+              <div>
+                <div className="text-[10px] uppercase text-muted-foreground">Community</div>
+                <div className="truncate">{l.community ?? l.location_text ?? "—"}</div>
+              </div>
             </div>
-            {l.price_dropped && priorPrice !== null && (
-              <div className="text-[10px] text-muted-foreground line-through">
-                {formatMoney(priorPrice, l.currency)}
+
+            {l.distress_keywords.length > 0 && (
+              <div className="mt-2 flex flex-wrap gap-1">
+                {l.distress_keywords.map((k) => (
+                  <Badge key={k} variant="secondary" className="px-1.5 py-0 text-[9px]">
+                    {k}
+                  </Badge>
+                ))}
               </div>
             )}
-          </div>
-          <div>
-            <div className="text-[10px] uppercase text-muted-foreground">AED/sqft</div>
-            <div>{l.price_per_sqft !== null ? Number(l.price_per_sqft).toLocaleString() : "—"}</div>
-          </div>
-          <div>
-            <div className="text-[10px] uppercase text-muted-foreground">Area</div>
-            <div>{l.area_sqft !== null ? `${Number(l.area_sqft).toLocaleString()} sqft` : "—"}</div>
-          </div>
-          <div>
-            <div className="text-[10px] uppercase text-muted-foreground">Beds/Baths</div>
-            <div className="inline-flex items-center gap-2">
-              <span className="inline-flex items-center gap-0.5">
-                <Bed className="h-3 w-3 text-muted-foreground" />
-                {l.bedrooms ?? "—"}
-              </span>
-              <span className="inline-flex items-center gap-0.5">
-                <Bath className="h-3 w-3 text-muted-foreground" />
-                {l.bathrooms ?? "—"}
-              </span>
-            </div>
-          </div>
-          <div>
-            <div className="text-[10px] uppercase text-muted-foreground">Rented for</div>
-            <div>
-              {l.average_rent !== null ? `${formatMoney(l.average_rent, l.currency)}/yr` : "—"}
-            </div>
-          </div>
-          <div>
-            <div className="text-[10px] uppercase text-muted-foreground">Listed</div>
-            <div>
-              {l.listed_days_ago !== null ? `${l.listed_days_ago}d ago` : (l.listed_date ?? "—")}
-            </div>
-          </div>
-          <div>
-            <div className="text-[10px] uppercase text-muted-foreground">Score</div>
-            <div>
-              {l.distress_score !== null ? l.distress_score.toFixed(0) : "—"}
-              {l.distress_confidence !== null && (
-                <span className="text-[10px] text-muted-foreground">
-                  {" "}
-                  ({l.distress_confidence.toFixed(0)}% conf.)
-                </span>
-              )}
-            </div>
-          </div>
-          <div>
-            <div className="text-[10px] uppercase text-muted-foreground">Community</div>
-            <div className="truncate">{l.community ?? l.location_text ?? "—"}</div>
-          </div>
-        </div>
 
-        {l.distress_keywords.length > 0 && (
-          <div className="mt-2 flex flex-wrap gap-1">
-            {l.distress_keywords.map((k) => (
-              <Badge key={k} variant="secondary" className="px-1.5 py-0 text-[9px]">
-                {k}
-              </Badge>
-            ))}
-          </div>
-        )}
-
-        {l.description && (
-          <p className="mt-2 line-clamp-2 text-xs text-muted-foreground">{l.description}</p>
-        )}
-
-        {(l.agent_name || l.whatsapp_link) && (
-          <div className="mt-2 flex items-center gap-2 text-xs">
-            {l.agent_name && <span className="text-muted-foreground">{l.agent_name}</span>}
-            {l.whatsapp_link && (
-              <a href={l.whatsapp_link} target="_blank" rel="noreferrer">
-                <Button
-                  size="sm"
-                  className="h-6 gap-1 bg-success px-2 text-success-foreground hover:bg-success/90"
-                >
-                  <MessageCircle className="h-3 w-3" /> WhatsApp
-                </Button>
-              </a>
+            {l.description && (
+              <p className="mt-2 line-clamp-2 text-xs text-muted-foreground">{l.description}</p>
             )}
-          </div>
+
+            {(l.agent_name || l.whatsapp_link) && (
+              <div className="mt-2 flex items-center gap-2 text-xs">
+                {l.agent_name && <span className="text-muted-foreground">{l.agent_name}</span>}
+                {l.whatsapp_link && (
+                  <a href={l.whatsapp_link} target="_blank" rel="noreferrer">
+                    <Button
+                      size="sm"
+                      className="h-6 gap-1 bg-success px-2 text-success-foreground hover:bg-success/90"
+                    >
+                      <MessageCircle className="h-3 w-3" /> WhatsApp
+                    </Button>
+                  </a>
+                )}
+              </div>
+            )}
+          </>
         )}
       </div>
     </div>

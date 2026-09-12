@@ -97,3 +97,20 @@ export type CreatePropertyJobScheduleInput = z.infer<typeof createPropertyJobSch
 export const propertyJobScheduleIdParamsSchema = z.object({ id: z.string().uuid() });
 
 export const setPropertyJobScheduleEnabledSchema = z.object({ enabled: z.boolean() });
+
+// --- Region building-age reference table (2026-08-25) -------------------------------------------
+
+export const bulkImportBuildingAgesSchema = z.object({
+  region: z.string().trim().min(1).max(200),
+  // Raw pasted table text (tab-separated or loosely space-aligned) — parsed server-side, see
+  // routes/propertyCrawl.ts's parseBuildingAgeTable.
+  rawText: z.string().trim().min(1).max(50_000),
+});
+
+export type BulkImportBuildingAgesInput = z.infer<typeof bulkImportBuildingAgesSchema>;
+
+export const buildingAgeIdParamsSchema = z.object({ id: z.string().uuid() });
+
+export const buildingAgeRegionQuerySchema = z.object({
+  region: z.string().trim().min(1).max(200).optional(),
+});

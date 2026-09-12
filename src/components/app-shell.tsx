@@ -2,10 +2,11 @@
 import { type ReactNode, useState } from "react";
 import { SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
 import { AppSidebar } from "@/components/app-sidebar";
-import { Search, Bell, Command } from "lucide-react";
+import { Bell } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { NewCrawlDialog } from "@/components/new-crawl-dialog";
 import { ThemeToggle } from "@/components/theme-toggle";
+import { GlobalCommandSearch, GlobalSearchTrigger } from "@/components/global-command-search";
 
 export function AppShell({
   children,
@@ -26,6 +27,7 @@ export function AppShell({
   // sets it — hover reveal/hide never does), so a hover-away doesn't fight an explicit "keep open".
   const [open, setOpen] = useState(false);
   const [pinned, setPinned] = useState(false);
+  const [searchOpen, setSearchOpen] = useState(false);
 
   return (
     <SidebarProvider
@@ -50,13 +52,7 @@ export function AppShell({
         <div className="flex flex-1 flex-col">
           <header className="sticky top-0 z-30 flex h-14 items-center gap-3 border-b border-border bg-background/70 px-4 backdrop-blur-xl">
             <SidebarTrigger className="text-muted-foreground hover:text-foreground" />
-            <div className="hidden md:flex items-center gap-2 rounded-md border border-border bg-card/60 px-3 py-1.5 text-sm text-muted-foreground w-80">
-              <Search className="h-3.5 w-3.5" />
-              <span>Search businesses, jobs, fields…</span>
-              <kbd className="ml-auto flex items-center gap-1 rounded border border-border bg-muted px-1.5 py-0.5 font-mono text-[10px]">
-                <Command className="h-3 w-3" /> K
-              </kbd>
-            </div>
+            <GlobalSearchTrigger onOpen={() => setSearchOpen(true)} />
             <div className="ml-auto flex items-center gap-2">
               <ThemeToggle />
               <Button variant="ghost" size="icon" className="text-muted-foreground">
@@ -77,6 +73,7 @@ export function AppShell({
           <main className="flex-1 p-6">{children}</main>
         </div>
       </div>
+      {searchOpen && <GlobalCommandSearch onClose={() => setSearchOpen(false)} />}
     </SidebarProvider>
   );
 }

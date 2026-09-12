@@ -231,6 +231,25 @@ class PropertyCaptureEngine:
                             continue
                         if key in seen:
                             continue
+                        # Client-side bedroom exact-match filter — the site's own bf=X&bt=X URL
+                        # params (search_url()) aren't reliably honored in every combination
+                        # (confirmed live 2026-08-25: propertyfinder leaked studio listings into a
+                        # 2-bedroom search once "Price low to high" sort was selected, even with
+                        # bf=2&bt=2 set). Re-enforced here the same defensive way as the bathroom
+                        # floor below, and shared by every platform since this loop is common to
+                        # both adapters. Only skips when the card's own bedroom count is
+                        # confidently known and doesn't match — a card where it couldn't be
+                        # parsed (None) is kept rather than discarded, same lenient convention as
+                        # the bathroom check. A studio search is exempt: a studio card's own
+                        # bedroom count (0, or often absent) is already that search's own target,
+                        # not something to filter out.
+                        if (
+                            filters.bedrooms is not None
+                            and filters.property_type != "studio"
+                            and dom.bedrooms is not None
+                            and dom.bedrooms != filters.bedrooms
+                        ):
+                            continue
                         # Client-side bathroom floor — see module docstring.
                         if (
                             filters.bathrooms is not None
