@@ -770,6 +770,33 @@ on this status for a deploy decision.
   PowerShell `WScript.Shell`, points at this .bat) now runs it automatically on every login — not
   committed to the repo (it's a per-machine OS setting, not project source), so a fresh machine
   needs it recreated once.
+- **OCR crawl performance pass + retry-refreshes-ready-jobs (2026-09-12, `md/OCR_CRAWL.md`)**:
+  reported live — a real Haldwani "gym" OCR job sat stuck well below expected throughput. Analysis
+  found `OCR_CONCURRENCY` (`settings.py`) defaulted to a flat `3` regardless of the container's real
+  core count, under-using Stage B's already-existing concurrency machinery; changed the default to
+  `min(8, cpu_count() - 1)` (override via `OCR_CONCURRENCY` unchanged). Also added `font`/`media`
+  resource blocking on Stage A's detail page (`capture.py`, mirroring `enrich/tier2.py`'s pattern) —
+  `image` deliberately stays unblocked since the segment screenshots ARE the OCR/audit-trail
+  artifact, unlike Tier-2's plain-HTML-only use case. **Investigated and deliberately rejected**:
+  skipping the Tesseract call entirely whenever DOM already has phone+website — `opening_hours` and
+  `email` have no DOM equivalent at all, so that would have silently dropped those two fields for
+  most businesses, not just saved time.
+  - **Retry now works on `ready` jobs too, and overwrites rather than resumes** — previously Retry
+    only appeared on `failed`/`blocked` jobs (a resumable retry, unchanged: picks up from the
+    on-disk `manifest.json`, skips already-captured businesses). A `ready` job's Retry (labeled
+    "Refresh" in the UI) now deletes that job's `manifest.json` + every existing `ocr_businesses`
+    row FIRST (`routes/ocrCrawl.ts`), then requeues — the worker walks the search completely fresh
+    and the new rows land at the same `(job_id, idx)` via `insert_ocr_business`'s existing
+    `ON CONFLICT DO UPDATE`, so the results are genuinely replaced with current data rather than
+    duplicated or silently stale. `retryOcrJob`'s SQL `WHERE` widened to
+    `status IN ('failed','blocked','ready')`; still blocked while a job is actively
+    queued/capturing/ocr/parsing.
+  - Verified: full backend test suite (117/117) and the OCR/settings-scoped Python suite (45/45)
+    green after the change; `tsc --noEmit`/eslint clean on both frontend and backend. **Not yet
+    live-verified against a real running job** — no live browser/container click-through was done
+    in this pass, flagged as a real gap rather than claimed complete; the underlying
+    `ON CONFLICT DO UPDATE` and manifest-resume mechanics were already relied on and tested by the
+    pre-existing resumable-retry feature this builds on.
 - **Known follow-up, not yet done**: `supabase/` (CLI config + old Lovable-era migrations) is dead
   weight left over from the original scaffold — the real schema is `db/migrations/*.sql` via
   node-pg-migrate. Safe to delete, just hasn't been done. Prod deployment target (which host, TLS

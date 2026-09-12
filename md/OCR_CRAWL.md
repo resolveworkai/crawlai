@@ -93,11 +93,28 @@ session) is still capped at one at a time (`ux_ocr_jobs_single_running`); any nu
 sit `queued` simultaneously. The create response includes `queuePosition` (jobs already queued
 ahead) so the UI can say "queued behind N" instead of silently accepting into a void.
 
-## Resumable retry — resumes from where it failed, not from zero
+## Retry — resumes a failed/blocked job, refreshes+overwrites a ready one
 
-A **Retry** button appears on `failed`/`blocked` jobs (`POST /ocr-crawl/jobs/:id/retry`, capped at
-`MAX_OCR_RETRIES = 3` — `db/ocrJobs.ts`). Retry reuses the **same job row** (same id, same
-`storage_dir`) rather than creating a new one, so nothing needs relocating:
+**Every non-running job is retryable** (2026-09-12 — was `failed`/`blocked` only), with two
+different behaviors depending on the job's status when **Retry**/**Refresh** is clicked
+(`POST /ocr-crawl/jobs/:id/retry`, capped at `MAX_OCR_RETRIES = 3` — `db/ocrJobs.ts`). Either way
+it reuses the **same job row** (same id, same `storage_dir`) rather than creating a new one, so
+nothing needs relocating:
+
+- **`failed`/`blocked` -> RESUME** (unchanged behavior, described below): picks up from wherever
+  the prior attempt left off.
+- **`ready` -> REFRESH**: a completed job's manifest is already fully done, so a plain resume would
+  find everything already there and finish instantly without capturing anything new — not useful
+  for "the listing may have changed, re-scan it." Instead the route (`routes/ocrCrawl.ts`) deletes
+  the on-disk `manifest.json` **and every existing `ocr_businesses` row for that job** before
+  requeueing it, so the worker walks the search fresh from scratch. The new capture's rows land at
+  the SAME `(job_id, idx)` via `insert_ocr_business`'s `ON CONFLICT DO UPDATE`, so the refreshed
+  data genuinely **overwrites** the old results rather than sitting duplicated alongside them; the
+  DB-level row delete (not just relying on the UPSERT) also covers a fresh walk finding fewer
+  businesses than before (one closed/delisted) — those stale extra rows are removed too, not left
+  behind with outdated data.
+
+The RESUME path (failed/blocked retry) works like this:
 
 - **Capture checkpoints incrementally.** `_write_manifest_checkpoint()` (`capture.py`) overwrites
   `manifest.json` after **every** successful capture, not just once when the whole run finishes —
@@ -156,7 +173,7 @@ records an `end_reason` (`end_of_list` | `max_results` | `stagnation` | `blocked
 | `GET /api/ocr-crawl/jobs/:id/results` | parsed rows |
 | `GET /api/ocr-crawl/jobs/:id/export?format=csv\|xlsx` | download (xlsx via exceljs — never the vulnerable `xlsx` npm pkg) |
 | `GET /api/ocr-crawl/jobs/:id/images/*` | a captured screenshot (read-only, path-traversal-guarded, 404 after purge) |
-| `POST /api/ocr-crawl/jobs/:id/retry` | resumable retry of a `failed`/`blocked` job (capped at 3) → `{job, queuePosition}` |
+| `POST /api/ocr-crawl/jobs/:id/retry` | retry any non-running job (capped at 3) — resumes `failed`/`blocked`, refreshes+overwrites `ready` → `{job, queuePosition}` |
 | `DELETE /api/ocr-crawl/jobs/:id` | remove rows + on-disk folder |
 
 ## OCR-readability core & performance
@@ -170,11 +187,25 @@ Two independent, orthogonal performance fixes, both measured live:
 - **`OMP_THREAD_LIMIT=1`** (`ocr_engine.py` + docker-compose env) — Tesseract's own internal
   multi-threading is 5.5x SLOWER on this app's image sizes (16.1s vs 2.9s for byte-identical
   output). Every OCR call stays single-threaded internally.
-- **`OCR_CONCURRENCY`** (`settings.ocr_concurrency`, default 3, env `OCR_CONCURRENCY`) — Stage B
-  runs this many businesses' (single-threaded) OCR calls concurrently via
-  `asyncio.Semaphore`+`asyncio.gather`, which is what actually uses multiple CPU cores across a
-  batch. Raise toward `core count - 1` if OCR still looks slow on a bigger box; set to `1` to fully
-  serialize again for debugging.
+- **`OCR_CONCURRENCY`** (`settings.ocr_concurrency`, env `OCR_CONCURRENCY`) — Stage B runs this many
+  businesses' (single-threaded) OCR calls concurrently via `asyncio.Semaphore`+`asyncio.gather`,
+  which is what actually uses multiple CPU cores across a batch. **Default changed 2026-09-12**
+  from a flat `3` to `min(8, cpu_count() - 1)` (`settings.py`) — a flat default left multi-core
+  containers under-using Stage B (found live: a real job stuck well below expected throughput on a
+  4-core box, only using 3 of them). Set to `1` to fully serialize again for debugging.
+- **Detail-page resource blocking (2026-09-12, `capture.py`)** — Stage A's detail page (the one
+  that navigates to each place URL, not the feed page) now blocks `font`/`media` requests via
+  `page.route`, mirroring `enrich/tier2.py`'s pattern. `image` is deliberately NOT blocked, unlike
+  Tier-2 — the segment screenshots here ARE the OCR/audit-trail artifact, so blocking photos would
+  degrade that trail for no real data gain (structured fields already come from the DOM, not
+  screenshot pixels). Cuts real per-business navigation time on Maps' photo-heavy place pages
+  without touching captured data or the audit screenshots.
+- **Investigated and deliberately NOT done**: unconditionally skipping the Tesseract call for
+  businesses where the DOM already has phone+website was considered but rejected — `opening_hours`
+  and `email` have no DOM equivalent at all (`DomFields` in `models.py` doesn't carry them), so
+  skipping OCR outright would silently drop those two fields for the majority of businesses, not
+  just save time. Revisit only alongside a product decision to accept that tradeoff (e.g. an
+  explicit "skip hours/email" job option), not as a blind performance change.
 
 ## Selector drift (§7)
 

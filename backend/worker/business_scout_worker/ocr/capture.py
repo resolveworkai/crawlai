@@ -25,6 +25,7 @@ from playwright.async_api import (
     BrowserContext,
     ElementHandle,
     Page,
+    Route,
     ViewportSize,
     async_playwright,
 )
@@ -41,6 +42,23 @@ from business_scout_worker.ocr.models import (
 from business_scout_worker.settings import Settings
 
 logger = get_logger(__name__)
+
+# Blocked on the DETAIL page only (never the feed page — its card thumbnails are a real signal
+# used while scrolling/collecting hrefs). "image" is deliberately NOT blocked here, unlike
+# enrich/tier2.py's equivalent: the segment screenshots this module takes ARE the OCR/audit-trail
+# artifact, and a hero photo missing from them would degrade that trail for no real benefit.
+# Fonts/media (video) carry no OCR-relevant content and Maps place pages never need them for the
+# DOM fields or screenshot text, so blocking just those two cuts real per-navigation network time
+# with zero effect on captured data or the audit screenshots.
+_DETAIL_BLOCKED_RESOURCE_TYPES = frozenset({"font", "media"})
+
+
+async def _block_light_resources(route: Route) -> None:
+    if route.request.resource_type in _DETAIL_BLOCKED_RESOURCE_TYPES:
+        await route.abort()
+    else:
+        await route.continue_()
+
 
 # (captured_count, discovered_count, current_business_name) -> awaited by the capture loop so a
 # failed progress write surfaces instead of being silently dropped.
@@ -597,6 +615,7 @@ class CaptureEngine:
             page.set_default_timeout(self._settings.ocr_nav_timeout_ms)
             detail_page = await context.new_page()
             detail_page.set_default_timeout(self._settings.ocr_nav_timeout_ms)
+            await detail_page.route("**/*", _block_light_resources)
             try:
                 for cell_index, (cell_lat, cell_lng, cell_r) in enumerate(cells):
                     if len(items) >= max_results:

@@ -44,7 +44,10 @@ export const Route = createFileRoute("/ocr-crawl")({
 // Must match backend/api/src/db/ocrJobs.ts's MAX_OCR_RETRIES — no shared-types package exists
 // yet to import this from a single source, so both sides carry the literal.
 const MAX_OCR_RETRIES = 3;
-const RETRYABLE: ReadonlySet<OcrJobStatus> = new Set(["failed", "blocked"]);
+// Every non-running job can be retried (2026-09-12 — was failed/blocked only): a "ready" job's
+// Retry RE-SCANS and overwrites its results (see the backend route's REFRESH path) rather than
+// resuming, since there's nothing left to resume from.
+const RETRYABLE: ReadonlySet<OcrJobStatus> = new Set(["failed", "blocked", "ready"]);
 const ACTIVE: ReadonlySet<OcrJobStatus> = new Set(["queued", "capturing", "ocr", "parsing"]);
 // Actually running a Chromium/Maps session — distinct from merely 'queued'. Only one job is ever
 // RUNNING at a time (server-enforced); any number may be 'queued' behind it and auto-run in turn.
@@ -361,7 +364,9 @@ function OcrCrawl() {
                 <p className="mt-1 text-[11px] text-muted-foreground">
                   Retried {focus.retry_count}/{MAX_OCR_RETRIES}
                   {focus.captured_count > 0 &&
-                    ` — ${focus.captured_count} businesses captured so far, kept across attempts`}
+                    (focus.status === "ready"
+                      ? ` — last refresh overwrote the results with ${focus.captured_count} freshly captured businesses`
+                      : ` — ${focus.captured_count} businesses captured so far, kept across attempts`)}
                 </p>
               )}
             </div>
@@ -389,7 +394,9 @@ function OcrCrawl() {
                   title={
                     focus.retry_count >= MAX_OCR_RETRIES
                       ? `Max retries (${MAX_OCR_RETRIES}) reached — the captured results are still available`
-                      : "Resume from the businesses already captured"
+                      : focus.status === "ready"
+                        ? "Re-scan from scratch and overwrite these results with fresh data"
+                        : "Resume from the businesses already captured"
                   }
                   onClick={() =>
                     retryJob.mutate(focus.id, {
@@ -404,7 +411,8 @@ function OcrCrawl() {
                   }
                 >
                   <RotateCcw className="h-3.5 w-3.5" />
-                  Retry{focus.retry_count > 0 ? ` (${focus.retry_count}/${MAX_OCR_RETRIES})` : ""}
+                  {focus.status === "ready" ? "Refresh" : "Retry"}
+                  {focus.retry_count > 0 ? ` (${focus.retry_count}/${MAX_OCR_RETRIES})` : ""}
                 </Button>
               )}
               <Button

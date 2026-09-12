@@ -71,19 +71,28 @@ export async function findOcrJobById(id: string): Promise<OcrJob | null> {
 // below — keep all three in sync if this ever changes).
 export const MAX_OCR_RETRIES = 3;
 
-// Resets a failed/blocked job back to 'queued' so the worker's claim loop picks it up again —
-// see business_scout_worker/ocr/pipeline.py's manifest-reload-on-claim, which is what makes this
-// an actual RESUME (skips already-captured businesses) rather than a plain restart. The WHERE
-// clause is the atomic guard: status must still be failed/blocked and under the retry cap, so two
-// concurrent retry clicks (or a retry racing a fresh worker pickup) can't double-increment or
-// resurrect an already-retried job. Returns null if that guard didn't hold — the caller
-// distinguishes "not found" vs "wrong state" vs "limit reached" by re-reading the row first.
+// Every job is retryable, not just failed/blocked ones (2026-09-12) — see routes/ocrCrawl.ts's
+// handler, which decides RESUME vs REFRESH based on the job's status before calling this:
+//   - failed/blocked -> RESUME: business_scout_worker/ocr/pipeline.py finds its own manifest.json
+//     still on disk and skips already-captured businesses, same as before this change.
+//   - ready -> REFRESH: the route deletes manifest.json + every ocr_businesses row for this job
+//     FIRST, so pipeline.py sees no manifest and walks fresh — a full re-capture that reflects
+//     current reality rather than replaying stale results.
+// Resets captured/ocr-done counts/current_business to 0/NULL either way — safe for a resumed
+// retry too, since pipeline.py immediately recomputes them from the resumed manifest/DB on claim
+// (ocr_jobs.py's get_ocr_done_indices), it doesn't trust whatever was last written here.
+// The WHERE clause is the atomic guard: status must still be in an allowed state and under the
+// retry cap, so two concurrent retry clicks (or a retry racing a fresh worker pickup) can't
+// double-increment or resurrect an already-retried job. Returns null if that guard didn't hold —
+// the caller distinguishes "not found" vs "wrong state" vs "limit reached" by re-reading the row
+// first.
 export async function retryOcrJob(id: string): Promise<OcrJob | null> {
   const { rows } = await pool.query<OcrJob>(
     `UPDATE ocr_jobs
      SET status = 'queued', error_message = NULL, end_reason = NULL,
-         started_at = NULL, finished_at = NULL, retry_count = retry_count + 1
-     WHERE id = $1 AND status IN ('failed', 'blocked') AND retry_count < $2
+         started_at = NULL, finished_at = NULL, retry_count = retry_count + 1,
+         total_count = 0, captured_count = 0, ocr_done_count = 0, current_business = NULL
+     WHERE id = $1 AND status IN ('failed', 'blocked', 'ready') AND retry_count < $2
      RETURNING *`,
     [id, MAX_OCR_RETRIES],
   );

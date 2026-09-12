@@ -1,5 +1,6 @@
 """Authored by: Mohit Singh"""
 
+import os
 from typing import Literal
 
 from pydantic import Field
@@ -52,16 +53,21 @@ class Settings(BaseSettings):
     tesseract_cmd: str | None = None
     """Absolute path to the tesseract binary. None => rely on PATH (correct in the Docker image
     where apt puts it on PATH; local Windows dev sets this to the UB-Mannheim install path)."""
-    ocr_concurrency: int = Field(default=3, ge=1, le=8)
+    ocr_concurrency: int = Field(
+        default_factory=lambda: max(1, min(8, (os.cpu_count() or 4) - 1)), ge=1, le=16
+    )
     """How many businesses' Stage B (Tesseract OCR) run concurrently. Distinct from the main
     crawler's crawl_settings.concurrency (job-level, DB-configurable) — this is per-image OCR
     parallelism within the ONE active OCR job (single-flight by design). Each Tesseract call
     stays single-threaded internally (OMP_THREAD_LIMIT=1 in ocr_engine.py — multi-threading a
     single image was measured 5.5x SLOWER), so running several calls concurrently is what
     actually uses multiple CPU cores. Capture (Stage A, one Chromium page) already finished
-    before Stage B starts, so this doesn't compete with browser navigation for the CPU. Keep at
-    or below the container's core count minus 1 — oversubscribing degrades every call equally
-    rather than speeding the batch up."""
+    before Stage B starts, so this doesn't compete with browser navigation for the CPU.
+    Defaults to (container core count - 1), capped at 8, rather than a flat 3 (2026-09-12 —
+    a flat default left multi-core hosts under-using Stage B while a real job sat mostly idle
+    between OCR calls); override via OCR_CONCURRENCY if a specific host needs a different value.
+    Keep at or below the container's core count minus 1 — oversubscribing degrades every call
+    equally rather than speeding the batch up."""
 
     # Product Research module (ecom/) — noon/amazon search-results capture + OCR fallback +
     # opportunity scoring. A SEPARATE module from Crawl-OCR (ocr/) above: own storage dir, own

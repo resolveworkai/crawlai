@@ -30,7 +30,7 @@ import {
   notifyOcrJobs,
   retryOcrJob,
 } from "../db/ocrJobs.js";
-import { listOcrBusinesses } from "../db/ocrBusinesses.js";
+import { deleteOcrBusinessesForJob, listOcrBusinesses } from "../db/ocrBusinesses.js";
 import { getCrawlSettings } from "../db/crawlSettings.js";
 import { buildOcrExport } from "../services/ocrExportService.js";
 import { config } from "../config.js";
@@ -69,11 +69,19 @@ ocrCrawlRouter.post(
   },
 );
 
-// Resumable retry: picks up from wherever the prior attempt left off (see pipeline.py's manifest
-// reload) rather than starting over. Capped at MAX_OCR_RETRIES — past that the job stays in its
-// terminal failed/blocked state, but whatever WAS captured across all attempts remains in
-// ocr_businesses and stays viewable/exportable (the /results and /export routes below don't gate
-// on job status).
+// Every job is retryable (2026-09-12 — was failed/blocked only), with two different behaviors
+// depending on the job's status when Retry is clicked:
+//   - failed/blocked: RESUME — picks up from wherever the prior attempt left off (pipeline.py
+//     finds its own manifest.json still on disk and skips already-captured businesses).
+//   - ready: REFRESH — a completed job's manifest is already fully done, so a plain "resume"
+//     would just find everything already there and finish instantly without capturing anything
+//     new. Instead this deletes the on-disk manifest + every existing ocr_businesses row for the
+//     job FIRST, so the worker walks fresh and re-captures/re-OCRs from scratch — the fresh
+//     results then land at the SAME (job_id, idx) via insert_ocr_business's ON CONFLICT DO
+//     UPDATE, genuinely overwriting the old data rather than sitting duplicated alongside it.
+// Capped at MAX_OCR_RETRIES — past that the job stays in its terminal state, but whatever WAS
+// captured across all attempts remains in ocr_businesses and stays viewable/exportable (the
+// /results and /export routes below don't gate on job status).
 ocrCrawlRouter.post(
   "/ocr-crawl/jobs/:id/retry",
   requireAuth,
@@ -82,15 +90,24 @@ ocrCrawlRouter.post(
   async (req, res) => {
     const existing = await findOcrJobById(req.params.id as string);
     if (!existing) throw new NotFoundError("OCR job not found");
-    if (existing.status !== "failed" && existing.status !== "blocked") {
+    if (!["failed", "blocked", "ready"].includes(existing.status)) {
       throw new ValidationError(
-        `Only failed or blocked jobs can be retried (this job is ${existing.status})`,
+        `Can't retry a job that's still running (this job is ${existing.status})`,
       );
     }
     if (existing.retry_count >= MAX_OCR_RETRIES) {
       throw new ValidationError(
         `Max retries (${MAX_OCR_RETRIES}) reached — the ${existing.captured_count} businesses already captured are still available to view/export`,
       );
+    }
+    if (existing.status === "ready" && existing.storage_dir) {
+      const manifestPath = path.resolve(
+        config.OCR_CAPTURES_DIR,
+        existing.storage_dir,
+        "manifest.json",
+      );
+      await rm(manifestPath, { force: true });
+      await deleteOcrBusinessesForJob(existing.id);
     }
     // Captured BEFORE the retry's own UPDATE flips this job to 'queued' too, so it reflects jobs
     // genuinely ahead of it (same ordering as the create-job handler above).
