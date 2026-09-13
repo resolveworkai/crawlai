@@ -172,6 +172,7 @@ records an `end_reason` (`end_of_list` | `max_results` | `stagnation` | `blocked
 | `GET /api/ocr-crawl/jobs/:id` | status + `{progress:{total,captured,ocrDone}}` (poll every 2 s) |
 | `GET /api/ocr-crawl/jobs/:id/results` | parsed rows |
 | `GET /api/ocr-crawl/jobs/:id/export?format=csv\|xlsx` | download (xlsx via exceljs — never the vulnerable `xlsx` npm pkg) |
+| `GET /api/ocr-crawl/jobs/:id/businesses/:businessId/export?format=csv\|xlsx` | row-level export — one business, same columns as the whole-job export |
 | `GET /api/ocr-crawl/jobs/:id/images/*` | a captured screenshot (read-only, path-traversal-guarded, 404 after purge) |
 | `POST /api/ocr-crawl/jobs/:id/retry` | retry any non-running job (capped at 3) — resumes `failed`/`blocked`, refreshes+overwrites `ready` → `{job, queuePosition}` |
 | `DELETE /api/ocr-crawl/jobs/:id` | remove rows + on-disk folder |

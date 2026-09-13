@@ -797,6 +797,15 @@ on this status for a deploy decision.
     in this pass, flagged as a real gap rather than claimed complete; the underlying
     `ON CONFLICT DO UPDATE` and manifest-resume mechanics were already relied on and tested by the
     pre-existing resumable-retry feature this builds on.
+- **Row-level OCR export (2026-09-13)**: the results table only had a job-level CSV/Excel export
+  (all rows). New `GET /ocr-crawl/jobs/:id/businesses/:businessId/export?format=csv|xlsx`
+  (`routes/ocrCrawl.ts`) exports a single already-captured business as a one-line file with the
+  EXACT same columns as the whole-job export — `ocrExportService.ts`'s CSV/XLSX builder was
+  refactored into a shared `buildFromRows(rows, format)` so the two paths can never format
+  differently, plus a new `findOcrBusinessById(jobId, id)` (`db/ocrBusinesses.ts`) scoped to
+  `(job_id, id)` so a business id from one job can't be exported under a different job's URL. New
+  "Export" column in the results table (`ocr-crawl.tsx`'s `ResultRow`) with per-row CSV/XLSX
+  download links (`ocrBusinessExportUrl` in `useOcrCrawl.ts`).
 - **Known follow-up, not yet done**: `supabase/` (CLI config + old Lovable-era migrations) is dead
   weight left over from the original scaffold — the real schema is `db/migrations/*.sql` via
   node-pg-migrate. Safe to delete, just hasn't been done. Prod deployment target (which host, TLS
@@ -837,7 +846,7 @@ Every list/single-resource endpoint wraps its payload in a named envelope (`{job
 | `/geocode` | `GET /?q=` (Nominatim proxy) |
 | `/exports` | `GET /` (history), `POST /` (generate xlsx/csv/json, operator+), `GET /:id/download` |
 | `/api/v1` | `GET /businesses` (api-key auth, rate-limited 120/min/key), `GET /openapi.json` (unauthenticated) |
-| `/ocr-crawl` | `POST /jobs` (operator+, 409 single-flight), `GET /jobs`, `GET /jobs/:id` (+progress), `GET /jobs/:id/results`, `GET /jobs/:id/export?format=csv\|xlsx`, `GET /jobs/:id/images/*splat` (screenshot), `DELETE /jobs/:id` (operator+) |
+| `/ocr-crawl` | `POST /jobs` (operator+, 409 single-flight), `POST /jobs/:id/retry` (operator+, resumes failed/blocked, refreshes+overwrites ready, capped at 3), `GET /jobs`, `GET /jobs/:id` (+progress), `GET /jobs/:id/results`, `GET /jobs/:id/export?format=csv\|xlsx`, `GET /jobs/:id/businesses/:businessId/export?format=csv\|xlsx` (row-level), `GET /jobs/:id/images/*splat` (screenshot), `DELETE /jobs/:id` (operator+) |
 | `/property-crawl` | `POST /jobs` (operator+, queues — never rejects), `POST /jobs/:id/retry` (operator+, resumable, capped at 3), `GET /jobs`, `GET /jobs/:id` (+progress), `GET /jobs/:id/results` (price-drop-enriched), `GET /jobs/:id/analysis`, `GET /jobs/:id/export?format=csv\|xlsx\|json`, `GET /jobs/:id/images/*splat` (screenshot), `DELETE /jobs/:id` (operator+), `GET /wishlist`, `POST /wishlist` (operator+), `DELETE /wishlist/:id` (operator+), `POST /listings/:id/refresh` (operator+), `GET /listings/:id/refresh/:refreshId`, `GET /building-ages/regions`, `GET /building-ages?region=`, `POST /building-ages/bulk-import` (operator+), `DELETE /building-ages/region/:region` (operator+), `DELETE /building-ages/:id` (operator+) |
 | `/health` | `GET /` (checks DB) |
 

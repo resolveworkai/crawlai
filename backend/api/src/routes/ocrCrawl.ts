@@ -17,6 +17,7 @@ import { validate } from "../middleware/validate.js";
 import {
   createOcrJobSchema,
   ocrExportQuerySchema,
+  ocrJobBusinessParamsSchema,
   ocrJobIdParamsSchema,
   type CreateOcrJobInput,
 } from "../schemas/ocrCrawl.js";
@@ -32,7 +33,7 @@ import {
 } from "../db/ocrJobs.js";
 import { deleteOcrBusinessesForJob, listOcrBusinesses } from "../db/ocrBusinesses.js";
 import { getCrawlSettings } from "../db/crawlSettings.js";
-import { buildOcrExport } from "../services/ocrExportService.js";
+import { buildOcrExport, buildOcrExportForBusiness } from "../services/ocrExportService.js";
 import { config } from "../config.js";
 import { NotFoundError, ValidationError } from "../errors.js";
 
@@ -166,6 +167,31 @@ ocrCrawlRouter.get(
     const file = await buildOcrExport(job.id, format);
     const safeQuery = job.query.replace(/[^a-z0-9]+/gi, "-").toLowerCase();
     const filename = `ocr-crawl_${safeQuery}_${job.id.slice(0, 8)}.${file.extension}`;
+    res.setHeader("Content-Type", file.contentType);
+    res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+    res.send(file.buffer);
+  },
+);
+
+// Row-level export — the per-row "Export" button in the results table, same CSV/XLSX shape as
+// the whole-job export above but scoped to one business (see ocrExportService's shared
+// buildFromRows so the two can never format differently).
+ocrCrawlRouter.get(
+  "/ocr-crawl/jobs/:id/businesses/:businessId/export",
+  requireAuth,
+  validate(ocrJobBusinessParamsSchema, "params"),
+  validate(ocrExportQuerySchema, "query"),
+  async (req, res) => {
+    const job = await findOcrJobById(req.params.id as string);
+    if (!job) throw new NotFoundError("OCR job not found");
+    const { format } = req.validatedQuery as unknown as { format: "csv" | "xlsx" };
+    const file = await buildOcrExportForBusiness(
+      job.id,
+      req.params.businessId as string,
+      format,
+    );
+    const safeQuery = job.query.replace(/[^a-z0-9]+/gi, "-").toLowerCase();
+    const filename = `ocr-business_${safeQuery}_${req.params.businessId!.slice(0, 8)}.${file.extension}`;
     res.setHeader("Content-Type", file.contentType);
     res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
     res.send(file.buffer);

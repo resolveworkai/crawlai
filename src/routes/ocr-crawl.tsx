@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { RequireAuth } from "@/components/require-auth";
 import {
+  ocrBusinessExportUrl,
   ocrExportUrl,
   ocrImageUrl,
   useCreateOcrJob,
@@ -458,13 +459,14 @@ function OcrCrawl() {
                         onSort={setSortKey}
                       />
                     )}
+                    <th className="px-2 py-2 text-left font-medium">Export</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-border">
                   {sorted.length === 0 && (
                     <tr>
                       <td
-                        colSpan={focus.center_lat !== null ? 10 : 9}
+                        colSpan={focus.center_lat !== null ? 11 : 10}
                         className="px-2 py-8 text-center text-muted-foreground"
                       >
                         No rows parsed.
@@ -627,6 +629,30 @@ function ResultRow({
           {b.distance_km !== null ? `${b.distance_km.toFixed(2)} km` : "—"}
         </td>
       )}
+      <td className="px-2 py-2">
+        <div className="flex items-center gap-1">
+          <a
+            href={ocrBusinessExportUrl(jobId, b.id, "csv")}
+            target="_blank"
+            rel="noreferrer"
+            title="Export this business as CSV"
+          >
+            <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground">
+              <Download className="h-3.5 w-3.5" />
+            </Button>
+          </a>
+          <a
+            href={ocrBusinessExportUrl(jobId, b.id, "xlsx")}
+            target="_blank"
+            rel="noreferrer"
+            title="Export this business as Excel"
+          >
+            <Button variant="ghost" size="sm" className="h-7 gap-1 px-1.5 text-muted-foreground">
+              XLSX
+            </Button>
+          </a>
+        </div>
+      </td>
     </tr>
   );
 }

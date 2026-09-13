@@ -48,4 +48,9 @@ export type CreateOcrJobInput = z.infer<typeof createOcrJobSchema>;
 
 export const ocrJobIdParamsSchema = z.object({ id: z.string().uuid() });
 
+export const ocrJobBusinessParamsSchema = z.object({
+  id: z.string().uuid(),
+  businessId: z.string().uuid(),
+});
+
 export const ocrExportQuerySchema = z.object({ format: z.enum(["csv", "xlsx"]).default("csv") });

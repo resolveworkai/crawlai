@@ -96,6 +96,15 @@ export function ocrExportUrl(id: string, format: "csv" | "xlsx"): string {
   return fileUrl(`/ocr-crawl/jobs/${id}/export?format=${format}`);
 }
 
+// Row-level export — one business as a single-line CSV/XLSX, same columns as the whole-job export.
+export function ocrBusinessExportUrl(
+  jobId: string,
+  businessId: string,
+  format: "csv" | "xlsx",
+): string {
+  return fileUrl(`/ocr-crawl/jobs/${jobId}/businesses/${businessId}/export?format=${format}`);
+}
+
 export function ocrImageUrl(id: string, relPath: string): string {
   // relPath is like "raw/001_slug_p1.png" — served by GET /ocr-crawl/jobs/:id/images/*
   return fileUrl(`/ocr-crawl/jobs/${id}/images/${relPath}`);
