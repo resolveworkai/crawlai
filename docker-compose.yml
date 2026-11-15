@@ -52,7 +52,9 @@ services:
       JWT_SECRET: ${JWT_SECRET:-docker-compose-local-only-jwt-secret-rotate-before-real-deploy}
       # Must match the browser-facing frontend origin — CORS requires an explicit origin
       # (not "*") because auth uses cookies with credentials:true. See auth/cookies.ts.
-      FRONTEND_ORIGIN: http://localhost:3000
+      # Override with FRONTEND_ORIGIN (+ FRONTEND_PORT below) in .env when host port 3000 is taken by
+      # another local project — the two MUST be changed together or login/CORS breaks.
+      FRONTEND_ORIGIN: ${FRONTEND_ORIGIN:-http://localhost:3000}
       # This compose file has no TLS termination (plain http://localhost) — a Secure cookie
       # is silently dropped by every browser over http://, breaking login with no visible
       # error. Override to true only once this stack sits behind real HTTPS. See config.ts.
@@ -131,7 +133,7 @@ services:
       # (that's VITE_API_URL, a build-arg above, not a runtime env var).
       BACKEND_URL: http://backend:4000
     ports:
-      - "3000:3000"
+      - "${FRONTEND_PORT:-3000}:3000"
     depends_on:
       backend:
         condition: service_healthy

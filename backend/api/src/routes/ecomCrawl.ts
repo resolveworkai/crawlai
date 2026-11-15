@@ -35,9 +35,32 @@ import { listEcomProducts } from "../db/ecomProducts.js";
 import { buildEcomExport } from "../services/ecomExportService.js";
 import { buildEcomAnalysis } from "../services/ecomAnalysisService.js";
 import { config } from "../config.js";
-import { NotFoundError, ValidationError } from "../errors.js";
+import { getHostRunnerHealth } from "../db/hostRunnerStatus.js";
+import { NotFoundError, ServiceUnavailableError, ValidationError } from "../errors.js";
 
 export const ecomCrawlRouter = Router();
+
+// Platforms that must run in the operator's REAL Chrome and must never fall back to a headless
+// browser. amazon.in returns HTTP 503 to headless Chromium (3/3 attempts, 2026-11-15) but works
+// through the real browser, so a job for it is refused up front — with the reason — when that
+// browser's runner isn't up, instead of queuing silently behind a worker that will never claim it.
+// (noon/aliexpress also need the real browser but keep their older "queue anyway, banner warns"
+// behavior.) The worker enforces the same rule independently — see ecom/capture.py.
+const REAL_BROWSER_ONLY_PLATFORMS: ReadonlySet<string> = new Set(["amazon_in"]);
+// One host runner process serves every CDP platform, under the heartbeat name "noon".
+const HOST_RUNNER_NAME = "noon";
+
+async function assertRealBrowserAvailable(platform: string): Promise<void> {
+  if (!REAL_BROWSER_ONLY_PLATFORMS.has(platform)) return;
+  const health = await getHostRunnerHealth(HOST_RUNNER_NAME);
+  if (health.healthy) return;
+  throw new ServiceUnavailableError(
+    `Amazon.in only runs in your real Chrome — Amazon returns HTTP 503 to a headless browser, so ` +
+      `headless is deliberately never used. The real-browser host runner isn't available: ` +
+      `${health.reason}. Start it with scripts/start-noon-host.bat (or scripts/start-all-hosts.bat), ` +
+      `then launch the job again.`,
+  );
+}
 
 ecomCrawlRouter.post(
   "/ecom-crawl/jobs",
@@ -46,6 +69,7 @@ ecomCrawlRouter.post(
   validate(createEcomJobSchema),
   async (req, res) => {
     const input = req.body as CreateEcomJobInput;
+    await assertRealBrowserAvailable(input.platform);
     // Position BEFORE this job's own insert — how many are already queued ahead of it.
     const queuedAhead = await countQueuedEcomJobs();
     const job = await createEcomJob({
@@ -86,6 +110,7 @@ ecomCrawlRouter.post(
         `Max retries (${MAX_ECOM_RETRIES}) reached — the ${existing.captured_count} products already captured are still available to view/export`,
       );
     }
+    await assertRealBrowserAvailable(existing.platform);
     // Captured BEFORE the retry's own UPDATE flips this job to 'queued' too, so it reflects jobs
     // genuinely ahead of it (same ordering as the create-job handler above).
     const queuedAhead = await countQueuedEcomJobs();

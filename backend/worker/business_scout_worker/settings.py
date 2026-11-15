@@ -50,6 +50,14 @@ class Settings(BaseSettings):
     ocr_crawl_headless: bool = True
     ocr_device_scale: int = Field(default=2, ge=1, le=4)
     ocr_nav_timeout_ms: int = Field(default=45000, gt=0)
+    ocr_business_timeout_s: float = Field(default=90.0, gt=0)
+    """Hard ceiling for ONE business (navigate -> panel -> DOM extract -> screenshots); a business
+    that exceeds it is abandoned and the walk moves on. Was a hard-coded 30s, which assumed a ~10s
+    place navigation — measured 2026-11-15 on a loaded 4-CPU machine, the stages take ~11-16s (goto)
+    + ~7-9s (panel) + ~19-22s (2 screenshots) = ~40-45s, so ~80% of businesses (18 of 22) were
+    thrown away at 30s while the job showed "capturing". 90s lets a slow-but-working business
+    finish; a genuinely stuck one now costs up to 90s instead of 30s.
+    Override with OCR_BUSINESS_TIMEOUT_S."""
     tesseract_cmd: str | None = None
     """Absolute path to the tesseract binary. None => rely on PATH (correct in the Docker image
     where apt puts it on PATH; local Windows dev sets this to the UB-Mannheim install path)."""

@@ -1,22 +1,24 @@
 """Authored by: Mohit Singh
 
 Platform-adapter registry for the e-commerce Product Research pipeline. Each supported
-marketplace (noon, amazon; aliexpress reserved) implements `PlatformAdapter` (base.py) and is
-registered here by its `ecom_jobs.platform` string. `get_adapter` is the single place the
-pipeline/capture engine goes to resolve "which site am I scraping" — never import a concrete
-adapter class directly outside this module and its own file.
+marketplace (noon, amazon [amazon.ae], amazon_in [amazon.in], aliexpress) implements
+`PlatformAdapter` (base.py) and is registered here by its `ecom_jobs.platform` string.
+`get_adapter` is the single place the pipeline/capture engine goes to resolve "which site am I
+scraping" — never import a concrete adapter class directly outside this module and its own file.
 """
 
 from __future__ import annotations
 
 from business_scout_worker.ecom.adapters.aliexpress import AliExpressAdapter
 from business_scout_worker.ecom.adapters.amazon import AmazonAdapter
+from business_scout_worker.ecom.adapters.amazon_in import AmazonInAdapter
 from business_scout_worker.ecom.adapters.base import PlatformAdapter
 from business_scout_worker.ecom.adapters.noon import NoonAdapter
 
 _REGISTRY: dict[str, type[PlatformAdapter]] = {
     "noon": NoonAdapter,
     "amazon": AmazonAdapter,
+    "amazon_in": AmazonInAdapter,
     "aliexpress": AliExpressAdapter,
 }
 

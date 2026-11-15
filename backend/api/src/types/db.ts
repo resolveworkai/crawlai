@@ -274,7 +274,7 @@ export interface OcrBusiness {
 // Crawl-OCR (Google Maps) module above — own tables/pg_notify channel/worker package/API
 // routes (see the migration's header comment). ---
 
-export type EcomPlatform = "noon" | "amazon" | "aliexpress";
+export type EcomPlatform = "noon" | "amazon" | "amazon_in" | "aliexpress";
 
 export type EcomSortMode = "rating_desc" | "price_asc" | "price_desc" | "relevance";
 

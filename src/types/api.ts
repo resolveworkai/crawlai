@@ -197,7 +197,7 @@ export interface OcrBusiness {
 // EcomAnalysis exactly. aliexpress is a valid platform value on existing rows but is NOT
 // creatable from the frontend (see schemas/ecomCrawl.ts) — the worker's adapter is a stub. ---
 
-export type EcomPlatform = "noon" | "amazon" | "aliexpress";
+export type EcomPlatform = "noon" | "amazon" | "amazon_in" | "aliexpress";
 
 export type EcomSortMode = "rating_desc" | "price_asc" | "price_desc" | "relevance";
 

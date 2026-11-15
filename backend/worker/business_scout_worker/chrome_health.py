@@ -189,3 +189,28 @@ async def write_heartbeat(
             )
     except Exception as exc:  # noqa: BLE001 - heartbeat writes are best-effort
         logger.debug("heartbeat write failed", runner=runner_name, error=str(exc))
+
+
+async def heartbeat_forever(pool: Any, runner_name: str, cdp_url: str, poll_seconds: float) -> None:
+    """Heartbeat from its OWN always-running task, independent of whatever the runner is doing.
+
+    The per-poll-cycle heartbeat above stops for as long as a job runs (a noon crawl can take many
+    minutes inside one cycle), so the dashboard banner cried "hasn't checked in" at a perfectly
+    healthy, busy runner — and anything supervising the runner (scripts/host-watchdog.ps1) could
+    not tell "busy" from "hung". Run as a background task, this keeps `last_heartbeat_at` fresh for
+    exactly as long as the runner's event loop is alive, so a stale heartbeat now genuinely means
+    the process is dead or wedged. It only reports reachability (a plain GET) and never relaunches
+    Chrome — that stays with the between-jobs ensure_chrome_running, so a heartbeat tick can never
+    race a running job over the browser. Never raises; cancel it to stop."""
+    while True:
+        try:
+            reachable = await is_cdp_reachable(cdp_url)
+            await write_heartbeat(
+                pool,
+                runner_name,
+                cdp_reachable=reachable,
+                last_error=None if reachable else "Chrome/CDP unreachable at last poll",
+            )
+        except Exception as exc:  # noqa: BLE001 - monitoring must never take the runner down
+            logger.debug("heartbeat tick failed", runner=runner_name, error=str(exc))
+        await asyncio.sleep(poll_seconds)

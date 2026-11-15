@@ -74,11 +74,9 @@ STAGNATION_ROUNDS = 3
 # Panel-readiness polling: short slices up to ~1.5s total, returning as soon as it's ready.
 PANEL_POLL_ATTEMPTS = 10
 PANEL_POLL_INTERVAL_S = 0.15
-# Hard ceiling for ONE business (navigate to place -> panel -> DOM extract -> screenshots).
-# The place navigation alone can take ~10s on a cold profile, so this must comfortably exceed
-# that — it's a stuck-listing backstop, NOT the normal per-item budget. A genuinely stuck item
-# is abandoned here and the walk moves on immediately.
-PER_BUSINESS_TIMEOUT_S = 30.0
+# The per-business ceiling (navigate to place -> panel -> DOM extract -> screenshots) is
+# settings.ocr_business_timeout_s (default 90s) — a stuck-listing backstop, NOT the normal per-item
+# budget; it used to be a hard-coded 30s here, too tight for a loaded machine.
 
 
 class CaptureBlockedError(Exception):
@@ -788,7 +786,7 @@ class CaptureEngine:
                             lng,
                             distance_km,
                         ),
-                        timeout=PER_BUSINESS_TIMEOUT_S,
+                        timeout=self._settings.ocr_business_timeout_s,
                     )
                 except TimeoutError:
                     logger.info("skip: capture timed out", name=name)

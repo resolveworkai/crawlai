@@ -60,17 +60,17 @@ async def claim_pending_ecom_job(
             row = await cur.fetchone()
     except UniqueViolation:
         # ux_ecom_jobs_single_running is actually TWO independent locks, not one global lock (the
-        # indexed expression `platform = ANY(['noon','aliexpress'])` only has two possible values,
-        # true/false, so at most one row can be running with EACH value) — confirmed live
-        # 2026-08-23: a real amazon job and a real noon job DO run status='capturing'
-        # simultaneously without tripping this. What it actually caps is: at most one job across
-        # {noon, aliexpress} (the CDP group, both claimed by the SAME host runner off the SAME
-        # queue) running at a time, and SEPARATELY at most one job across every other platform
-        # (today just amazon, claimed by the container daemon) running at a time. A second
-        # concurrent claim attempt within the SAME group trips this — expected back-pressure, NOT
-        # an error: the job stays queued and the loser retries later. (This used to crash the
-        # container daemon mid-claim, whose respawn then clobbered the host runner's in-flight job
-        # via orphan recovery.)
+        # indexed expression `platform = ANY(['noon','aliexpress','amazon_in'])` only has two
+        # values, true/false, so at most one row can be running with EACH value) — confirmed live
+        # 2026-08-23: a real amazon job and a real noon job DO run status='capturing' simultaneously
+        # without tripping this. What it actually caps is: at most one job across {noon, aliexpress,
+        # amazon_in} (the CDP group, all claimed by the SAME host runner off the SAME queue) running
+        # at a time, and SEPARATELY at most one job across every other platform (today just
+        # amazon.ae, claimed by the container daemon) running at a time. A second concurrent claim
+        # attempt within the SAME group trips this — expected back-pressure, NOT an error: the job
+        # stays queued and the loser retries later. (This used to crash the container daemon
+        # mid-claim, whose respawn then clobbered the host runner's in-flight job via orphan
+        # recovery.)
         return None
     return EcomJob.model_validate(row) if row is not None else None
 

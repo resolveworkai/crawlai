@@ -17,9 +17,14 @@ from typing import Any
 from business_scout_worker.ecom.models import DomProductFields, ParsedProduct
 from business_scout_worker.ocr.ocr_engine import OcrLine, OcrResult
 
-# Currency + amount: AED, د.إ, SAR, or $ followed by a number with optional thousands separators.
+# Currency + amount: AED, د.إ, SAR, INR/₹/Rs, or $ followed by a number with optional thousands
+# separators. The first amount alternative is Indian lakh/crore grouping ("1,29,999" — a 3-digit
+# tail preceded by 2-digit groups); without it the standard alternative would stop at "1,29" and
+# read a ₹1,29,999 price as 1. `_parse_price` strips the commas, so both shapes parse the same way.
 PRICE_RE = re.compile(
-    r"(?:AED|SAR|USD|\$|د\.إ)\s*([\d]{1,3}(?:[,\s]\d{3})*(?:\.\d{1,2})?|\d+(?:\.\d{1,2})?)",
+    r"(?:AED|SAR|USD|INR|Rs\.?|\$|₹|د\.إ)\s*"
+    r"(\d{1,2}(?:,\d{2})+,\d{3}(?:\.\d{1,2})?"
+    r"|[\d]{1,3}(?:[,\s]\d{3})*(?:\.\d{1,2})?|\d+(?:\.\d{1,2})?)",
     re.I,
 )
 RATING_RE = re.compile(r"\b([0-5](?:\.\d)?)\s*(?:out of\s*5)?\b", re.I)

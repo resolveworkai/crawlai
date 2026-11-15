@@ -58,6 +58,26 @@ container-internal ports (5432, 4000, 3000) never need to change, only the host-
 why every container here is named `business-scout-*` and the Compose project is namespaced: so a collision is a
 five-second port remap, never a risk of two projects colliding on the same container/volume/network.
 
+## Host runners are supervised by a watchdog (Property Research, noon/AliExpress/Amazon.in)
+
+These run as plain Windows processes against the operator's real Chrome (not in Docker), so nothing
+restarts them for free. `scripts/host-watchdog.ps1` is the supervisor, run as the per-user scheduled
+task `BusinessScoutHostWatchdog` (`scripts/install-host-watchdog.ps1`, logon + every 5 min, no admin).
+Rules to keep:
+- **Match runners by exact command line** (`run_noon_host.py` / `run_property_host.py`) — never kill
+  `python.exe`/`chrome.exe` wholesale.
+- **Never start a second copy of a live runner**: runner startup runs orphan recovery, which fails the
+  first copy's in-flight job. Any "start the runners" path must check first (`start-all-hosts.bat` now
+  just runs one watchdog pass for this reason).
+- **Hung detection needs a truthful heartbeat.** It relies on `chrome_health.heartbeat_forever`, an
+  always-running task; the once-per-cycle heartbeat goes silent for the length of a job and would make
+  a busy runner look dead. Unknown heartbeat (docker/DB down) must never kill anything.
+- **One log file per launch** (`<runner>-host-<time>.log`): the debug Chrome inherits the launcher's
+  redirected output handle and holds that file open for its whole life, so a fixed log path makes every
+  relaunch fail on the redirect before the launcher runs.
+- Don't use `goto :label` in the `.bat` launchers (LF line endings can break label lookup); use
+  `if errorlevel` blocks. PowerShell 5.1 needs the `.ps1` files ASCII-only.
+
 ## Chromium-in-container risk — retire it early
 
 `backend/Dockerfile`'s Python stage is based on `mcr.microsoft.com/playwright/python` **even before Tier-2

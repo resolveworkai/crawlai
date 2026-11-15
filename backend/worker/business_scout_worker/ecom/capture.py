@@ -26,6 +26,7 @@ from playwright.async_api import (
     ViewportSize,
     async_playwright,
 )
+from playwright.async_api import Error as PlaywrightError
 
 from business_scout_worker.ecom.adapters.base import PlatformAdapter
 from business_scout_worker.ecom.models import CapturedProduct, EcomEndReason, EcomManifest
@@ -43,8 +44,37 @@ ProgressCallback = Callable[[int, int, str | None], Awaitable[None]]
 VIEWPORT: ViewportSize = {"width": 1440, "height": 1000}
 STAGNATION_ROUNDS = 3
 DETAIL_SCRAPE_HARD_CAP = 10
+# Re-attempts after a platform serves its transient error page (see _recover_from_error_page).
+ERROR_PAGE_RETRIES = 2
+# How many times ONE results page may be re-queried after its card handles went stale.
+STALE_CARD_REFRESHES = 3
+_STALE_HANDLE_MARKERS = (
+    "cannot find context with specified id",
+    "execution context was destroyed",
+    "not attached to the dom",
+    "element is not attached",
+)
+
+
+def is_stale_handle_error(exc: BaseException) -> bool:
+    """True for the Playwright errors that mean "the page re-rendered under this ElementHandle" —
+    the card is gone, not the job. Seen live on amazon.in over CDP (2026-11-15): Amazon re-renders
+    the results list mid-walk and the next `card.query_selector` dies with `Protocol error
+    (DOM.describeNode): Cannot find context with specified id`, which used to fail the whole job at
+    32/90 and discard everything. Deliberately narrow: a closed page/browser is a real failure."""
+    message = str(exc).lower()
+    return any(marker in message for marker in _STALE_HANDLE_MARKERS)
+
+
 """Defense in depth beyond the DB CHECK (ecom_jobs.detail_scrape_top_n BETWEEN 0 AND 10) — never
 navigate to more than this many detail pages regardless of what's requested."""
+
+
+class EcomRealBrowserRequiredError(Exception):
+    """Raised when a platform that can ONLY run in the operator's real Chrome (REQUIRES_CDP — e.g.
+    amazon.in, which answers a headless browser with HTTP 503) has no real browser to attach to.
+    A strict check, never a fallback: launching headless instead would just burn the job on the
+    503 wall the real browser exists to avoid. The message is shown to the operator verbatim."""
 
 
 class EcomBlockedError(Exception):
@@ -114,8 +144,26 @@ class EcomCaptureEngine:
         without killing that Chrome. Otherwise a headless persistent context is launched and
         cdp_browser is None (caller closes the context normally)."""
         cdp_url = self._settings.ecom_cdp_url
+        platform = self._adapter.platform
+        if self._adapter.REQUIRES_CDP and not cdp_url:
+            raise EcomRealBrowserRequiredError(
+                f"{platform} only runs in your real Chrome (a headless browser is refused by the "
+                "site and is deliberately never used), but no real browser is configured "
+                "(ECOM_CDP_URL is unset). Start scripts/start-noon-host.bat, which opens the "
+                "debug Chrome and runs the host runner."
+            )
         if cdp_url:
-            browser = await p.chromium.connect_over_cdp(cdp_url)
+            try:
+                browser = await p.chromium.connect_over_cdp(cdp_url)
+            except Exception as exc:
+                if not self._adapter.REQUIRES_CDP:
+                    raise
+                reason = str(exc).splitlines()[0] if str(exc) else type(exc).__name__
+                raise EcomRealBrowserRequiredError(
+                    f"{platform} only runs in your real Chrome, but attaching to it at {cdp_url} "
+                    f"failed ({reason}). Not falling back to headless. Make sure the debug Chrome "
+                    "is running (scripts/start-noon-host.bat) and retry the job."
+                ) from exc
             context = browser.contexts[0] if browser.contexts else await browser.new_context()
             context.set_default_timeout(self._settings.ecom_nav_timeout_ms)
             return context, browser
@@ -177,6 +225,8 @@ class EcomCaptureEngine:
                     await self._goto_with_download_retry(page, url)
                     await self._adapter.prepare_page(page)
                     await self._wait_for_cards(page)
+                    if not await self._find_cards(page):
+                        await self._recover_from_error_page(page, url, page_num)
 
                     if await self._adapter.is_blocked(page):
                         await page.screenshot(path=str(self._job_dir / "debug_blocked.png"))
@@ -195,14 +245,39 @@ class EcomCaptureEngine:
                         continue
 
                     new_count = 0
-                    for card in cards:
+                    stale_refreshes = 0
+                    pos = 0
+                    while pos < len(cards):
+                        card = cards[pos]
+                        pos += 1
                         if should_stop is not None and should_stop():
                             raise EcomInterruptedError
                         if len(items) >= max_products:
                             end_reason = "max_products"
                             break
 
-                        dom = await self._adapter.extract_card(card)
+                        try:
+                            dom = await self._adapter.extract_card(card)
+                        except PlaywrightError as exc:
+                            if not is_stale_handle_error(exc) or (
+                                stale_refreshes >= STALE_CARD_REFRESHES
+                            ):
+                                raise
+                            # The page re-rendered under our handles. Re-query the cards and start
+                            # the pass over: products already captured are skipped via `seen`, so
+                            # this only re-reads cheap DOM, never duplicates a row.
+                            stale_refreshes += 1
+                            logger.warning(
+                                "card handles went stale, re-querying cards",
+                                platform=self._adapter.platform,
+                                page=page_num,
+                                captured=len(items),
+                                refresh=stale_refreshes,
+                            )
+                            await humanize.dwell(600, 1200)
+                            cards = await self._find_cards(page)
+                            pos = 0
+                            continue
                         href = dom.product_url
                         key = self._adapter.product_key(href)
                         if key is None:
@@ -225,12 +300,13 @@ class EcomCaptureEngine:
 
                         idx = len(items) + 1
                         images: list[str] = []
-                        try:
-                            rel = f"raw/{idx:03d}_{_slug(title)}.png"
-                            await self._screenshot_card(card, str(self._job_dir / rel))
-                            images.append(rel)
-                        except Exception as exc:  # noqa: BLE001 - screenshot is best-effort
-                            logger.info("card screenshot failed", title=title, error=str(exc))
+                        if self._adapter.CARD_SCREENSHOTS:
+                            try:
+                                rel = f"raw/{idx:03d}_{_slug(title)}.png"
+                                await self._screenshot_card(card, str(self._job_dir / rel))
+                                images.append(rel)
+                            except Exception as exc:  # noqa: BLE001 - screenshot is best-effort
+                                logger.info("card screenshot failed", title=title, error=str(exc))
 
                         captured = CapturedProduct(
                             idx=idx,
@@ -343,6 +419,39 @@ class EcomCaptureEngine:
             logger.debug("card screenshot retrying once", error=str(exc))
             await humanize.dwell(400, 600)
             await card.screenshot(path=path, animations="disabled", timeout=20000)
+
+    async def _recover_from_error_page(self, page: Page, url: str, page_num: int) -> None:
+        """A results page with zero cards is either a genuinely empty search or the platform's
+        transient error page (Amazon serves one intermittently — seen live on amazon.ae
+        2026-11-15, which used to finish as a "ready" job with 0 rows). When the adapter
+        recognizes the latter, back off, clear the browser's cookies and reload, up to
+        ERROR_PAGE_RETRIES times; if it persists raise EcomBlockedError so the job ends visibly
+        `blocked` (and is retryable) instead of silently "ready" with nothing in it. No-op for a
+        genuine empty page. Cookies are NOT cleared when attached over CDP — that is the
+        operator's real Chrome and its sign-ins are not ours to wipe."""
+        for attempt in range(1, ERROR_PAGE_RETRIES + 1):
+            if not await self._adapter.is_error_page(page):
+                return
+            logger.warning(
+                "platform served an error page, retrying",
+                platform=self._adapter.platform,
+                page=page_num,
+                attempt=attempt,
+            )
+            if not self._settings.ecom_cdp_url:
+                await page.context.clear_cookies()
+            await humanize.dwell(2500 * attempt, 4000 * attempt)
+            await self._goto_with_download_retry(page, url)
+            await self._adapter.prepare_page(page)
+            await self._wait_for_cards(page)
+            if await self._find_cards(page):
+                return
+        if await self._adapter.is_error_page(page):
+            await page.screenshot(path=str(self._job_dir / "debug_error_page.png"))
+            raise EcomBlockedError(
+                f"{self._adapter.platform} kept serving an error page at page {page_num} "
+                f"after {ERROR_PAGE_RETRIES} retries — retry the job in a few minutes"
+            )
 
     async def _wait_for_cards(self, page: Page) -> None:
         """Bounded wait for the FIRST product card to appear before we check is_blocked/count

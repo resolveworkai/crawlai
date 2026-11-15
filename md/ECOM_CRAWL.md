@@ -16,6 +16,95 @@ the main Overpass crawler — Node inserts an `ecom_jobs` row + `pg_notify`, the
 + drives it, results land in `ecom_products`. Nothing in the OCR/Maps module or the main crawler is
 touched by this one.
 
+## Platforms: amazon.ae, amazon.in, noon, aliexpress
+
+| `platform` key | Site | Currency | Runs in |
+|---|---|---|---|
+| `amazon` | amazon.ae | AED | container daemon (headless) |
+| `amazon_in` | amazon.in (added 2026-11-15) | INR | host runner over CDP (your real Chrome) |
+| `noon` | noon.com/uae-en | AED | host runner over CDP |
+| `aliexpress` | aliexpress.com | USD | host runner over CDP |
+
+`amazon_in` is a thin subclass of `AmazonAdapter` (`adapters/amazon_in.py`) overriding only the host,
+`language=en_IN`, currency and key — every selector/parse path is shared, so a fix to one Amazon
+marketplace applies to both. Its own key (never folded into `amazon`) keeps existing amazon.ae rows
+valid. OCR price parsing understands ₹/INR/Rs and Indian lakh grouping (`₹1,29,999`).
+
+**`amazon_in` is `REQUIRES_CDP`** (the operator's explicit choice): amazon.in answered the headless
+container browser with HTTP 503 on every attempt (3/3), but works through the operator's real Chrome
+— verified live, 25 products from 1 page in 80s with INR prices, real product titles, rating/reviews
+23/25 and delivery 25/25. It is therefore skipped by the container daemon and claimed only by the
+host runner (`run_noon_host.py`, which serves every CDP platform despite its name). No user-agent/
+header spoofing is involved: the real browser is used as-is.
+
+**Strict real-browser rule (operator requirement): amazon.in never falls back to headless.** Enforced
+in two independent places, each with a message that says exactly what to do:
+- **Worker** (`EcomCaptureEngine._open_context`): a `REQUIRES_CDP` platform with no `ECOM_CDP_URL`, or
+  whose real Chrome can't be attached, raises `EcomRealBrowserRequiredError` — the job ends `failed`
+  with that message — and **never** launches a headless browser. (Applies to every CDP platform;
+  `amazon.ae`'s headless path is untouched.) Pinned by `tests/test_ecom_real_browser.py`, including a
+  test that no headless launch is attempted.
+- **API** (`POST /ecom-crawl/jobs` and `.../retry`, `assertRealBrowserAvailable`): an `amazon_in` job
+  is refused with HTTP 503 and a reason ("it has never started" / "it stopped responding (last
+  heartbeat Ns ago)" / "its Chrome is not reachable: …") when the host runner's heartbeat isn't
+  healthy, instead of queuing silently behind a worker that will never claim it. Health comes from
+  one shared pure function, `evaluateRunnerHealth` (`db/hostRunnerStatus.ts`), so this guard and the
+  dashboard banner can never disagree. noon/aliexpress keep their older "queue anyway, banner warns"
+  behavior; the strict API refusal is amazon.in only (`REAL_BROWSER_ONLY_PLATFORMS`).
+
+**Concurrency:** `ux_ecom_jobs_single_running` buckets by "is this a CDP platform?" and its array
+(`noon, aliexpress, amazon_in`, migration `1786500000000`) MUST stay in sync with the adapters'
+`REQUIRES_CDP` flags — `cdp_required_platforms()` is the Python source of truth. So noon/aliexpress/
+amazon.in share ONE slot (one job at a time, all on the single host runner) and run concurrently
+with amazon.ae in the container. Adding a CDP platform means updating both in the same change.
+
+### Amazon error pages are rate-limit responses, not empty searches (2026-11-15)
+Amazon intermittently answers with a generic error page instead of results — the Arabic
+"Sorry! … error processing your request" page on amazon.ae, and HTTP 503 "It's rush hour and traffic
+is piling up on that page" on amazon.in. Neither has a CAPTCHA marker or any result cards, so the
+engine used to read them as a genuine empty search and finish the job **`ready` with 0 rows**.
+`PlatformAdapter.is_error_page()` (default `False`; Amazon overrides) + `EcomCaptureEngine.
+_recover_from_error_page()` now back off, clear cookies and reload up to `ERROR_PAGE_RETRIES` (2)
+times, then raise `EcomBlockedError` so the job ends visibly `blocked` and is retryable. Cookies are
+never cleared over CDP (that is the operator's real Chrome). It is triggered by volume: after ~10
+Amazon requests in an hour (jobs + probes) from one IP both marketplaces refused every request, so
+**don't hammer Amazon when testing** — and don't try to evade it with a spoofed user-agent/timezone/
+automation-flag; that is detection evasion, not a fix. amazon.in's 503 hit every headless attempt
+(3/3) — resolved by running it on the host runner (above). **amazon.ae from the container's headless
+browser was still refused an hour later even for a 15-product request**, so on this machine that
+path looks persistently flagged; moving `amazon` to `REQUIRES_CDP` too (one flag + the lock array)
+is the likely fix if it matters, but is the operator's call.
+
+### Stale card handles over CDP (2026-11-15)
+On amazon.in the first real run died at 32/90 with `Protocol error (DOM.describeNode): Cannot find
+context with specified id`, and one stale card failed the whole job (discarding everything). The
+cause is NOT established: a later 45s observation of the same page saw no re-rendering at all (0 cards
+removed/added, 0 reloads), so the one-off context loss is unexplained. The capture loop now
+re-queries the cards on that error (`is_stale_handle_error`, up to `STALE_CARD_REFRESHES` = 3 per
+page; products already captured are skipped via `seen`, so nothing duplicates) and still fails fast
+on genuinely fatal errors such as a closed page. A defensive fix for an unexplained failure, covered by
+`tests/test_ecom_capture_stale.py`, which drives the real `run()` loop against fake pages.
+
+### "The page keeps refreshing" was scroll + screenshots, not a reload (measured, fixed for amazon.in)
+Measured on the live amazon.in tab with a read-only second CDP client: **0 main-frame navigations,
+0 document reloads, 0 result cards removed** — but `scrollY` swung 0→~5000px with repeated large
+jumps. The scraper scrolled each product card into view and screenshotted it (~1.5–2s per card),
+which in a visible Chrome reads as a refresh. Fix: `PlatformAdapter.CARD_SCREENSHOTS` (default
+`True`); `AmazonInAdapter` sets it `False`, so the loop skips the per-card scroll+screenshot.
+Verified live: `scrollY` stayed 0..0 with zero jumps, 20 rows captured with identical field coverage.
+It costs only the per-card audit PNGs — every amazon.in row is DOM-sourced (`sources={'dom': N}`) so
+OCR never read them (the detail-page screenshots of the top-N are kept). Other platforms keep their
+screenshots; flip the flag per adapter if noon/aliexpress should do the same (aliexpress is pure-OCR
+and MUST keep them). Separately, the dashboard polls job status every 2s while a job is active
+(`refetchInterval` in `hooks/useEcomCrawl.ts`, by design) — it updates text/counters, it doesn't
+reload the page.
+
+**Honest speed note:** skipping the screenshots removed the scrolling but did NOT make the job
+faster. Capture still runs ~3s per card because `extract_card` makes ~15 sequential DOM queries over
+the remote debugging connection (the `:has-text(...)` selectors are the costliest). A single batched
+`card.evaluate` per card would likely cut that sharply — not done, not asked for. A run also showed
+an unexplained ~45s stall before the first card (browser attach / page load).
+
 ## noon.com requires CDP-attach to the operator's real Chrome (host runner) {#noon-cdp}
 
 **amazon.ae runs headless in the container like everything else. noon.com does NOT and cannot.**

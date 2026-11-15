@@ -9,7 +9,7 @@ import { timeAgo } from "@/lib/utils";
 
 const LABELS: Record<string, string> = {
   property: "Property Research host runner",
-  noon: "noon/AliExpress host runner",
+  noon: "noon/AliExpress/Amazon.in host runner",
 };
 
 function describe(r: RunnerStatusView): string {

@@ -1,12 +1,13 @@
 /** Authored by: Mohit Singh */
 import { z } from "zod";
 
-// Product Research (Ecom-Crawl) module. All three platforms are creatable. noon + aliexpress are
+// Product Research (Ecom-Crawl) module. All four platforms are creatable. noon + aliexpress are
 // REQUIRES_CDP (Akamai-blocked to automated launch) — they run only via the host runner attached
 // to the operator's real Chrome (backend/worker/run_noon_host.py), not the container daemon; the
-// UI still queues them normally. amazon runs headless in the container.
+// UI still queues them normally. amazon (amazon.ae) and amazon_in (amazon.in) run headless in the
+// container daemon, one ecom job at a time.
 export const createEcomJobSchema = z.object({
-  platform: z.enum(["noon", "amazon", "aliexpress"]),
+  platform: z.enum(["noon", "amazon", "amazon_in", "aliexpress"]),
   query: z.string().min(1).max(200),
   sortMode: z
     .enum(["rating_desc", "price_asc", "price_desc", "relevance"])

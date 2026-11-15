@@ -27,18 +27,35 @@ _CARD_SELECTORS: tuple[str, ...] = (
     "div[data-asin]:not([data-asin=''])",
 )
 _CAPTCHA_TEXT = "type the characters you see in this image"
+# Amazon's generic "dog page" error, served intermittently (seen live on amazon.ae, 2026-11-15, as
+# the ARABIC variant even with language=en_AE — hence both languages). Not a CAPTCHA: no
+# #captchacharacters, so is_blocked() is False and the page used to read as "0 results".
+_ERROR_PAGE_MARKERS: tuple[str, ...] = (
+    "there was an error processing your request",
+    "sorry! something went wrong",
+    "حدث خطأ عند محاولة معالجة طلبك",
+    # amazon.in's variant (2026-11-15): HTTP-503 titled "503 - Service Unavailable Error" with this
+    # body. It is Amazon refusing the request, not an empty search — same recovery, and if it
+    # persists the job must end visibly `blocked` rather than "ready" with 0 rows.
+    "traffic is piling up on that page",
+)
+_ERROR_PAGE_TITLES: tuple[str, ...] = ("503 - service unavailable error", "service unavailable")
 
 
 class AmazonAdapter(PlatformAdapter):
     platform: ClassVar[str] = "amazon"
     default_currency: ClassVar[str] = "AED"
+    # Marketplace host + `language=` locale — class-level so a sibling marketplace (amazon.in)
+    # reuses every selector/parse path below by overriding just these, not copying the adapter.
+    base_url: ClassVar[str] = BASE_URL
+    language: ClassVar[str] = "en_AE"
     uses_pagination: ClassVar[bool] = True
     CARD_SELECTOR: ClassVar[str] = _CARD_SELECTORS[0]
     BLOCK_SELECTORS: ClassVar[tuple[str, ...]] = _CARD_SELECTORS
 
     def search_url(self, query: str, sort: SortMode, page: int) -> str:
         term = quote(query)
-        params = [f"k={term}", f"page={page}", "language=en_AE"]
+        params = [f"k={term}", f"page={page}", f"language={self.language}"]
         if sort == "rating_desc":
             params.append("s=review-rank")
         elif sort == "price_asc":
@@ -46,7 +63,7 @@ class AmazonAdapter(PlatformAdapter):
         elif sort == "price_desc":
             params.append("s=price-desc-rank")
         # relevance: no `s` param — Amazon's own default ranking.
-        return f"{BASE_URL}/s?{'&'.join(params)}"
+        return f"{self.base_url}/s?{'&'.join(params)}"
 
     async def prepare_page(self, page: Page) -> None:
         for selector in (
@@ -71,6 +88,16 @@ class AmazonAdapter(PlatformAdapter):
             return False
         return _CAPTCHA_TEXT in body.lower()
 
+    async def is_error_page(self, page: Page) -> bool:
+        try:
+            title = (await page.title()).lower()
+            body = (await page.inner_text("body"))[:2000].lower()
+        except Exception:  # noqa: BLE001 - a torn-down page must not crash the error check
+            return False
+        return any(t in title for t in _ERROR_PAGE_TITLES) or any(
+            marker in body for marker in _ERROR_PAGE_MARKERS
+        )
+
     async def extract_card(self, card: ElementHandle) -> DomProductFields:
         async def text_of(selector: str) -> str | None:
             el = await card.query_selector(selector)
@@ -79,10 +106,24 @@ class AmazonAdapter(PlatformAdapter):
             t = (await el.inner_text()).strip()
             return t or None
 
-        title = await text_of("h2 span") or await text_of("h2 a")
-        anchor = await card.query_selector("h2 a") or await card.query_selector("a.a-link-normal")
+        # Current Amazon cards carry TWO <h2>s: a brand line (outside the link) and the real
+        # product title (inside the link, also its aria-label). The bare "h2 span" the adapter used
+        # to try first matched the brand, so every row came back titled "Hape" / "Fisher-Price"
+        # (confirmed live on amazon.ae 2026-11-15). Prefer the in-link title; the old selectors
+        # stay as fallbacks for cards still on the single-<h2> layout.
+        title = (
+            await text_of("a h2 span")
+            or await text_of("a h2")
+            or await text_of("h2 span")
+            or await text_of("h2 a")
+        )
+        anchor = (
+            await card.query_selector("a:has(h2)")
+            or await card.query_selector("h2 a")
+            or await card.query_selector("a.a-link-normal")
+        )
         href = (await anchor.get_attribute("href")) if anchor is not None else None
-        product_url = self.normalize_product_url(href, BASE_URL) if href else None
+        product_url = self.normalize_product_url(href, self.base_url) if href else None
 
         price_text = await text_of("span.a-price > span.a-offscreen")
         list_price_text = await text_of("span.a-price.a-text-price > span.a-offscreen")

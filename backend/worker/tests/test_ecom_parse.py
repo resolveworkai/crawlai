@@ -10,6 +10,8 @@ to the test that documents the real (non-)behavior instead of forcing a false pa
 
 from __future__ import annotations
 
+import pytest
+
 from business_scout_worker.ecom import parse_product
 from business_scout_worker.ecom.models import DomProductFields
 from business_scout_worker.ocr.ocr_engine import OcrLine, OcrResult
@@ -299,3 +301,25 @@ def test_dom_title_not_overridden_by_ocr_derivation() -> None:
         dom=DomProductFields(title="Genuine DOM Title"),
     )
     assert parsed.title == "Genuine DOM Title"
+
+
+# --- INR / rupee prices in the OCR fallback (amazon.in) ----------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("₹1,29,999", "1,29,999"),  # Indian lakh grouping must not truncate to "1"
+        ("₹ 1,299.00", "1,299.00"),
+        ("Rs. 54,999", "54,999"),
+        ("INR 12,34,567.50", "12,34,567.50"),
+        ("₹499", "499"),
+        ("AED 1,299", "1,299"),  # existing currencies unchanged
+    ],
+)
+def test_price_regex_handles_rupees_and_indian_grouping(text: str, expected: str) -> None:
+    from business_scout_worker.ecom.parse_product import PRICE_RE
+
+    m = PRICE_RE.search(text)
+    assert m is not None
+    assert m.group(1) == expected

@@ -93,6 +93,21 @@ session) is still capped at one at a time (`ux_ocr_jobs_single_running`); any nu
 sit `queued` simultaneously. The create response includes `queuePosition` (jobs already queued
 ahead) so the UI can say "queued behind N" instead of silently accepting into a void.
 
+## Per-business timeout and why jobs "time out" (2026-11-15)
+
+Each business has a hard ceiling (`settings.ocr_business_timeout_s`, default **90s**, env
+`OCR_BUSINESS_TIMEOUT_S`; it was a hard-coded 30s). A business over the ceiling is skipped
+(`skip: capture timed out` in the worker log) and the walk moves on — so a too-low ceiling silently
+throws data away while the job still reads "capturing". Measured on a loaded 4-CPU machine, one
+business needs ~40–45s (navigation 11–16s, panel detection 7–9s, two panel screenshots 19–22s), so the
+old 30s ceiling abandoned ~80% of them. Check the worker log (`docker logs business-scout-backend |
+grep "capture timed out"`) before assuming Google is blocking you. Container CPU near 300% and a
+saturated host are the usual cause; see the levers listed in `CLAUDE.md`.
+
+**Redeploying kills a running job.** Recreating the backend container marks an in-flight OCR job
+`failed` ("Interrupted by a server restart — relaunch the job."). It is resumable via Retry, but
+rebuild only when no OCR job is running.
+
 ## Retry — resumes a failed/blocked job, refreshes+overwrites a ready one
 
 **Every non-running job is retryable** (2026-09-12 — was `failed`/`blocked` only), with two

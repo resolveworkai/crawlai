@@ -70,13 +70,13 @@ plus a screenshot audit trail.
 - **Known gap:** review count is not obtainable anonymously.
 
 ### 3. Product Research / Ecom crawl (`md/ECOM_CRAWL.md`)
-Searches **amazon.ae**, **noon.com**, and **AliExpress** for a query and walks the result cards page
+Searches **amazon.ae**, **amazon.in**, **noon.com**, and **AliExpress** for a query and walks the result cards page
 by page. It reads card fields from the DOM (title, price, rating, reviews, badges, sponsored flag),
 OCRs a screenshot as a fallback, and scores every product with a weighted opportunity score
 (reviews, rating, demand, value).
 
 - Sortable results table with CSV/XLSX/JSON export.
-- **amazon** runs headless in the container.
+- **amazon.ae** runs headless in the container. **amazon.in** runs on the host runner through your real Chrome, because Amazon returns HTTP 503 to the headless browser. Amazon rate-limits automated traffic, so refused jobs end `blocked` and can be retried later.
 - **noon and AliExpress** need the operator's real Chrome over CDP (see host runners below).
 
 ### 4. Property Research
@@ -122,13 +122,28 @@ dubizzle, propertyfinder, and noon block automated and headless browsers at the 
 modules run through your real Chrome. A Linux container can't reach it. Two small host processes
 attach over CDP (`127.0.0.1:9222`) instead.
 
-```bat
-scripts\start-all-hosts.bat     :: launches both runners, Property first, then noon
+```powershell
+powershell -File scripts\install-host-watchdog.ps1     # once per machine: install the self-healing watchdog
+scripts\start-all-hosts.bat                            # any time: start whatever runner is missing, right now
+powershell -File scripts\install-host-watchdog.ps1 -Uninstall
 ```
 
-- Both runners **self-heal**: if Chrome dies, one relaunches it, and they resume without help.
-- Both write a **heartbeat**. The UI shows a banner if a runner has gone quiet.
-- A Startup-folder shortcut to `start-all-hosts.bat` makes them start at Windows login. This is a per-machine setting, so recreate it on a new machine.
+**Auto-healing.** The runners are plain Windows processes, so nothing used to restart one that died
+(a reboot, a closed window, a crash) and jobs just sat queued. `install-host-watchdog.ps1` registers
+a per-user scheduled task (no admin needed) that runs `scripts\host-watchdog.ps1` at logon and again
+every 5 minutes. It checks both runners every 30 seconds and:
+
+- **restarts a runner that is gone** (typically back within ~15s),
+- **restarts a runner that is alive but frozen** (heartbeat older than 5 minutes),
+- **backs off** instead of restarting forever if a runner keeps crashing (5 starts in 10 minutes).
+
+It never starts a second copy of a healthy runner (a duplicate fails the first one's in-flight job),
+and it only ever kills a runner by its exact command line, never a blanket `python.exe` or
+`chrome.exe`. Each launch writes its own log in `backend\worker\storage\logs\`
+(`noon-host-<time>.log`, `property-host-<time>.log`, plus `host-watchdog.log`).
+
+- The runners also **self-heal Chrome**: if the debug Chrome dies, one relaunches it.
+- Each runner writes a **heartbeat** from an always-running task, so the dashboard banner means what it says: it appears when a runner is dead or frozen, not merely busy with a long job.
 - Never kill Chrome with a blanket `taskkill /IM chrome.exe`. Target the debug profile's PIDs only.
 
 ## Quickstart
@@ -142,7 +157,7 @@ supervisord, migrations applied automatically on start), and `frontend`.
 
 | Service | URL |
 |---|---|
-| Frontend | http://localhost:3000 |
+| Frontend | http://localhost:3000 (override with `FRONTEND_PORT` + `FRONTEND_ORIGIN` in `.env` if the port is taken) |
 | Backend API | http://localhost:4010 |
 | Postgres | `localhost:5436` |
 

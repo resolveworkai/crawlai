@@ -10,9 +10,10 @@ from __future__ import annotations
 
 import pytest
 
-from business_scout_worker.ecom.adapters import get_adapter
+from business_scout_worker.ecom.adapters import cdp_required_platforms, get_adapter
 from business_scout_worker.ecom.adapters.aliexpress import AliExpressAdapter
 from business_scout_worker.ecom.adapters.amazon import AmazonAdapter
+from business_scout_worker.ecom.adapters.amazon_in import AmazonInAdapter
 from business_scout_worker.ecom.adapters.base import extract_asin
 from business_scout_worker.ecom.adapters.noon import (
     NoonAdapter,
@@ -231,3 +232,65 @@ def test_noon_parse_rating_real_sample() -> None:
 
 def test_noon_parse_amount_real_sample() -> None:
     assert _parse_amount("199") == 199.0
+
+
+# --- amazon.in (amazon_in) ----------------------------------------------------------------------
+# A sibling marketplace that reuses amazon.ae's selectors/parsing via subclassing — these pin down
+# the few things that must differ (host, locale, currency, key) and that amazon.ae is unaffected.
+
+
+def test_amazon_in_search_url_relevance_no_sort_param() -> None:
+    url = AmazonInAdapter().search_url("kids wooden toys", "relevance", 1)
+    assert url == "https://www.amazon.in/s?k=kids%20wooden%20toys&page=1&language=en_IN"
+
+
+@pytest.mark.parametrize(
+    ("sort", "suffix"),
+    [
+        ("rating_desc", "&s=review-rank"),
+        ("price_asc", "&s=price-asc-rank"),
+        ("price_desc", "&s=price-desc-rank"),
+    ],
+)
+def test_amazon_in_search_url_sort_params(sort: str, suffix: str) -> None:
+    url = AmazonInAdapter().search_url("kids wooden toys", sort, 2)  # type: ignore[arg-type]
+    assert url == f"https://www.amazon.in/s?k=kids%20wooden%20toys&page=2&language=en_IN{suffix}"
+
+
+def test_amazon_in_registered_with_inr_currency_and_own_key() -> None:
+    adapter = get_adapter("amazon_in")
+    assert isinstance(adapter, AmazonInAdapter)
+    assert adapter.platform == "amazon_in"
+    assert adapter.default_currency == "INR"
+
+
+def test_amazon_in_does_not_change_amazon_ae() -> None:
+    adapter = get_adapter("amazon")
+    assert type(adapter) is AmazonAdapter
+    assert adapter.platform == "amazon"
+    assert adapter.default_currency == "AED"
+    assert (
+        adapter.search_url("x", "relevance", 1)
+        == "https://www.amazon.ae/s?k=x&page=1&language=en_AE"
+    )
+
+
+def test_amazon_in_is_a_host_runner_platform_and_amazon_ae_stays_in_the_container() -> None:
+    # amazon.in 503s the headless container browser, so it runs on the host runner over the
+    # operator's real Chrome (like noon). cdp_required_platforms() is what splits the queue between
+    # the container daemon (excludes these) and the host runner (claims only these), so it must
+    # contain amazon_in — and must NOT contain amazon.ae, which still runs headless in the
+    # container.
+    assert AmazonInAdapter.REQUIRES_CDP is True
+    assert AmazonAdapter.REQUIRES_CDP is False
+    assert cdp_required_platforms() == frozenset({"noon", "aliexpress", "amazon_in"})
+    assert "amazon" not in cdp_required_platforms()
+
+
+def test_amazon_in_product_key_extracts_asin_and_normalizes_to_amazon_in_host() -> None:
+    adapter = AmazonInAdapter()
+    assert adapter.product_key("/Wooden-Toy/dp/B0ABCDE123/ref=sr_1_1?qid=1") == "B0ABCDE123"
+    href = "/Wooden-Toy/dp/B0ABCDE123/ref=sr_1_1?qid=1"
+    url = adapter.normalize_product_url(href, adapter.base_url)
+    assert url.startswith("https://www.amazon.in/Wooden-Toy/dp/B0ABCDE123")
+    assert "qid=" not in url

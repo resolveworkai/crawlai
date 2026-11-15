@@ -87,7 +87,8 @@ const STATUS_COLOR: Record<EcomJobStatus, string> = {
 
 const PLATFORM_OPTIONS: { value: EcomPlatform; label: string; disabled?: boolean }[] = [
   { value: "noon", label: "Noon (needs host runner)" },
-  { value: "amazon", label: "Amazon" },
+  { value: "amazon", label: "Amazon.ae" },
+  { value: "amazon_in", label: "Amazon.in (needs host runner)" },
   // noon + aliexpress are Akamai-blocked to automated launch — they run via the host runner
   // (real Chrome), not the container. Still queued normally from here.
   { value: "aliexpress", label: "AliExpress (needs host runner)" },
@@ -103,6 +104,13 @@ const SORT_OPTIONS: { value: EcomSortMode; label: string }[] = [
 // AliExpress has no rating sort — its adapter maps rating_desc to orders (total_tranpro_desc,
 // "orders" sort) instead. Same underlying sortMode value, platform-specific label only, so the
 // dropdown doesn't claim a "rating" sort that doesn't exist there.
+// Human label for a platform key — the raw key (e.g. "amazon_in") is not display text.
+function platformLabel(platform: EcomPlatform): string {
+  return (
+    PLATFORM_OPTIONS.find((o) => o.value === platform)?.label.replace(/ \(.*\)$/, "") ?? platform
+  );
+}
+
 function sortOptionsFor(platform: EcomPlatform): { value: EcomSortMode; label: string }[] {
   if (platform !== "aliexpress") return SORT_OPTIONS;
   return SORT_OPTIONS.map((opt) =>
@@ -264,7 +272,7 @@ function EcomCrawl() {
   return (
     <AppShell
       title="Product Research"
-      subtitle="Search a marketplace's results pages, capture pricing/ratings/badges, then score each product's market opportunity. Amazon and noon/AliExpress run independently (concurrently); two jobs on the same platform still queue behind each other."
+      subtitle="Search a marketplace's results pages, capture pricing/ratings/badges, then score each product's market opportunity. noon, AliExpress and Amazon.in run on the host runner (your real Chrome), independently of Amazon.ae in the container (concurrently); jobs within the same group queue one at a time."
     >
       <RunnerStatusBanner runnerNames={["noon"]} />
       <Card className="border-border bg-card p-5">
@@ -410,7 +418,7 @@ function EcomCrawl() {
                   {focus.status.toUpperCase()}
                 </span>
                 <span className="truncate text-xs text-muted-foreground">
-                  {focus.platform} · {focus.query}
+                  {platformLabel(focus.platform)} · {focus.query}
                 </span>
               </div>
               <div className="mt-1 text-xs text-muted-foreground">
@@ -430,9 +438,9 @@ function EcomCrawl() {
               )}
               {focus.status === "blocked" && (
                 <p className="mt-1 flex items-center gap-1 text-xs text-warning">
-                  <AlertTriangle className="h-3 w-3" /> {focus.platform} served a verification wall
-                  — stopped safely. Retry resumes from the {focus.captured_count} products already
-                  captured.
+                  <AlertTriangle className="h-3 w-3" /> {platformLabel(focus.platform)} served a
+                  verification wall — stopped safely. Retry resumes from the {focus.captured_count}{" "}
+                  products already captured.
                 </p>
               )}
               {focus.error_message && focus.status === "failed" && (
@@ -631,7 +639,7 @@ function EcomCrawl() {
               }`}
             >
               <span className="min-w-0 truncate">
-                <span className="font-medium capitalize">{j.platform}</span>{" "}
+                <span className="font-medium">{platformLabel(j.platform)}</span>{" "}
                 <span className="text-muted-foreground">· {j.query}</span>
               </span>
               <span className="flex shrink-0 items-center gap-3 text-xs">

@@ -15,7 +15,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict
 
-Platform = Literal["noon", "amazon", "aliexpress"]
+Platform = Literal["noon", "amazon", "amazon_in", "aliexpress"]
 SortMode = Literal["rating_desc", "price_asc", "price_desc", "relevance"]
 EcomJobStatus = Literal[
     "queued", "capturing", "ocr", "parsing", "detail", "ready", "failed", "blocked"

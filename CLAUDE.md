@@ -750,7 +750,7 @@ on this status for a deploy decision.
     only, never a blanket kill of every `python.exe`/`chrome.exe` — see the earlier Chrome-taskkill
     mistake above) via the existing `start-property-host.bat`/`start-noon-host.bat` launchers; stop
     tears the same set down.
-- **Host runners auto-start at Windows login (2026-09-12)**: the Property Research and noon/
+- **Host runners auto-start at Windows login (2026-09-12) — start-up mechanism SUPERSEDED 2026-11-15 by the self-healing watchdog (see the entry below); the Startup-folder shortcut described here was removed**: the Property Research and noon/
   AliExpress host runners are architecturally host-only, not containerized — both
   dubizzle.com/propertyfinder.ae and noon.com block plain headless Chromium at the edge, so they
   only work through the operator's real, visible Chrome on the Windows host (see
@@ -806,6 +806,153 @@ on this status for a deploy decision.
   `(job_id, id)` so a business id from one job can't be exported under a different job's URL. New
   "Export" column in the results table (`ocr-crawl.tsx`'s `ResultRow`) with per-row CSV/XLSX
   download links (`ocrBusinessExportUrl` in `useOcrCrawl.ts`).
+- **Product Research: amazon.in added (runs on the host runner), Amazon error-page recovery, stale-card
+  recovery, title fix, frontend port override (2026-11-15, `md/ECOM_CRAWL.md`)**: new `amazon_in`
+  platform (`adapters/amazon_in.py`, a subclass of `AmazonAdapter` overriding only host/
+  `language=en_IN`/INR/key — `AmazonAdapter` gained class-level `base_url`/`language` for this),
+  migration `1786400000000` widening `ecom_jobs_platform_check`, Node `schemas/ecomCrawl.ts` +
+  `types/db.ts` + frontend `EcomPlatform`/`PLATFORM_OPTIONS` (+ a `platformLabel()` so the UI never
+  shows the raw key), and ₹/INR/Rs + Indian-lakh-grouping support in the OCR price regex
+  (`parse_product.py` — the standard pattern would read `₹1,29,999` as `1`).
+  - **`amazon_in` is `REQUIRES_CDP`, by the operator's explicit choice.** amazon.in answered the
+    headless container browser with HTTP 503 ("rush hour") on 3/3 attempts. Running it through the
+    operator's real Chrome (the noon path) works — **verified live: 25 products from 1 page in 80s,
+    INR prices, real product titles, rating/reviews 23/25, delivery 25/25.**
+    `cdp_required_platforms()` is the single source of truth, so setting the flag moved it off the
+    container daemon and onto `run_noon_host.py` (which serves every CDP platform despite its name)
+    automatically; **`ux_ecom_jobs_single_running`'s array must stay in sync with the flags**, so
+    migration `1786500000000` re-keyed it to `noon, aliexpress, amazon_in` (one shared CDP slot,
+    concurrent with amazon.ae in the container). The host runner is a plain Windows Python process:
+    it only loads new code on restart (kill just its own `run_noon_host.py` PIDs by exact command
+    line, then relaunch `scripts/start-noon-host.bat`). A request to compare spoofed user-agent/
+    timezone/automation-flag variants was declined as detection evasion — the real browser is used
+    as-is, nothing is disguised.
+  - **Strict real-browser rule (operator requirement — "do not use headless, use the real browser for
+    amazon.in as a strict check with a message"):** enforced twice, independently. Worker:
+    `EcomCaptureEngine._open_context` raises `EcomRealBrowserRequiredError` for any `REQUIRES_CDP`
+    platform with no `ECOM_CDP_URL` or an unattachable Chrome (job ends `failed` with the message;
+    **never** a headless launch — `tests/test_ecom_real_browser.py` proves no launch is attempted).
+    API: `POST /ecom-crawl/jobs` + `/retry` refuse an `amazon_in` job with 503 + reason when the host
+    runner heartbeat is unhealthy (`assertRealBrowserAvailable`, `REAL_BROWSER_ONLY_PLATFORMS`),
+    sharing `evaluateRunnerHealth` (`db/hostRunnerStatus.ts`) with the dashboard banner so they can't
+    disagree. noon/aliexpress keep the older "queue anyway, banner warns" behavior. (A template-
+    literal `\s` in that message once silently ate a backslash — use forward slashes in
+    user-facing path text.)
+  - **Dry run (kids wooden toys) found real bugs, all fixed:** (1) Amazon's intermittent error pages
+    (Arabic "Sorry!" on .ae, HTTP-503 "rush hour" on .in) read as an empty search, so jobs finished
+    `ready` with 0 rows — new `is_error_page()` adapter hook + `EcomCaptureEngine.
+    _recover_from_error_page()` retries then raises `EcomBlockedError` (never clears cookies over
+    CDP); (2) every Amazon row was titled with its brand ("Hape") because cards carry two `<h2>`s —
+    now prefers the in-link title (verified live on amazon.in: real product names); (3) over CDP one card
+    lookup died at 32/90 with `Cannot find context with specified id` and failed the whole job — the
+    loop now re-queries stale cards (`is_stale_handle_error`, `STALE_CARD_REFRESHES`=3, `seen`
+    prevents duplicates) and still fails fast on a closed page; tested against the real `run()` loop
+    (`tests/test_ecom_capture_stale.py`). **The root cause is unproven** — I first blamed Amazon
+    re-rendering the grid, but later 45s observations showed 0 cards removed/added and 0 reloads, so
+    that explanation was wrong; the recovery is a defensive fix for an unexplained one-off.
+  - **Live results:** amazon.ae 90 rows/2 pages with full fields before Amazon began refusing the
+    machine; noon 90 rows and a 1-page/30-product job returned exactly 30 (see config note below),
+    matching noon's historical field coverage (reviews and detail-page fields were already sparse on
+    noon in Aug — NOT a regression, still a real gap); amazon.in 25/25 via real Chrome. **amazon.ae
+    from the headless container is still refused an hour later even for a 15-product request** —
+    persistently flagged on this machine; moving `amazon` to `REQUIRES_CDP` too is the likely fix but
+    is the operator's call. Don't hammer Amazon when testing (~10 requests/hour tripped it).
+  - **"Configured 30 products / 1 page but saw 90" — verified NOT a bug:** the form sends exactly
+    `maxPages`/`maxProducts`, the server stores them, and a real noon job with 1 page/30 products
+    stored `max_pages=1, max_products=30` and captured exactly 30. Every other job in the DB was a
+    test job at 90; opening/reloading the page focuses *whichever job is running*
+    (`focusId = selectedId ?? runningJob?.id`), which is why another job's 90 can appear. Caveat:
+    noon/aliexpress scroll rather than paginate, so "pages" doesn't bound them — "max products" does.
+  - **"The page keeps refreshing" — measured: scroll + screenshots, NOT a reload; fixed for amazon.in:**
+    a read-only second CDP client on the live amazon.in tab saw 0 main-frame navigations, 0 document
+    reloads and 0 result cards removed, but `scrollY` swinging 0→~5000px — the scraper scrolled each
+    card into view and screenshotted it (~1.5–2s per card), which in a visible Chrome looks like a
+    refresh. New `PlatformAdapter.CARD_SCREENSHOTS` (default `True`); `AmazonInAdapter` sets it `False`
+    so the per-card scroll+screenshot is skipped (the pipeline already tolerates rows with no images:
+    OCR is skipped when the DOM is complete or `images` is empty, and every amazon.in row is
+    DOM-sourced). **Verified live: `scrollY` 0..0, zero jumps, 20 rows with identical coverage.** Costs
+    only the per-card audit PNGs; noon/aliexpress unchanged (aliexpress is pure-OCR and MUST keep
+    them). **It did NOT make jobs faster** — capture is still ~3s/card because `extract_card` does
+    ~15 sequential DOM queries over the debug connection (`:has-text` selectors costliest); one
+    batched `card.evaluate` per card would likely fix that (not done). One run also stalled ~45s
+    before the first card (unexplained). The dashboard also polls job status every 2s while a job is
+    active (by design; updates counters, doesn't reload). Tests: 357→386 Python, backend vitest +6
+    (`hostRunnerStatus.test.ts`), mypy --strict/ruff/tsc/eslint clean.
+  - **Frontend port 3000 collision (found while restarting)**: another local Docker container
+    (`c7corp-local`, the c7corp site) owns host port 3000, so `localhost:3000` served a Next.js app
+    instead of ours (our frontend container ran but was unpublished). `docker-compose.yml` now reads
+    `FRONTEND_PORT`/`FRONTEND_ORIGIN` (defaults unchanged, 3000) and this machine's gitignored `.env`
+    sets 3100 — **both must change together** or CORS/login breaks. If `localhost:3000` ever shows a
+    different app, check `docker ps` for another container publishing 3000 before debugging ours.
+  - **Gotchas hit**: Python `write_text()` on Windows rewrites a file as CRLF (breaking prettier — use
+    `write_bytes` and preserve the file's own line ending; `ecom/capture.py` is CRLF, most TS is LF);
+    killing a `docker compose` shell wrapper does NOT stop the compose process, leaving a
+    half-created frontend container; a wedged debug Chrome accepts the CDP websocket but never
+    finishes `connect_over_cdp` (180s timeout) — restart only that PID tree and the runners'
+    self-heal relaunches it within ~10s (verified live).
+- **OCR crawl failures diagnosed (2026-11-15, `md/OCR_CRAWL.md`)**: a "library" job showed `failed,
+  2 rows`. Two separate causes: (1) **my own container rebuild killed it** — it was marked `failed`
+  "Interrupted by a server restart — relaunch the job." at the exact second the backend was recreated
+  (`recovered orphaned ocr jobs`), so any `docker compose up --build backend` / restart during a
+  running OCR job fails it; it is resumable (Retry), but redeploy only when no OCR job is running.
+  (2) **capture itself was timing out**: the next job (gym) captured 4 businesses in 12 minutes —
+  18 of 22 hit "skip: capture timed out" at the hard-coded 30s `PER_BUSINESS_TIMEOUT_S`. Per-stage
+  timing in the container (A/B, same place URL): goto 11–16s + panel 7–9s + 2 panel screenshots
+  19–22s ≈ 40–45s per business, so the ceiling threw away most of them. **My earlier font/media
+  request blocking was cleared by the A/B** (39s with it vs 45s without — slightly faster). Root
+  cause is the machine: 4 logical CPUs shared by Windows and Docker's VM, host CPU at 100%, only
+  0.5 GB of 16 GB RAM free, backend container at ~300% CPU (headless Chromium rendering Maps at
+  `OCR_DEVICE_SCALE`=2). Heavy consumers: Chrome (37 procs, incl. the debug Chrome's idle
+  noon/dubizzle tabs) and a stray 2-day-old `python -` process (not ours, left alone). The user's
+  first screenshot this session (45 rows in 19 minutes) shows the slowness predates every change.
+  Fix in code: `settings.ocr_business_timeout_s` (default 90s, env `OCR_BUSINESS_TIMEOUT_S`) replaces
+  the hard-coded 30s — **committed to the working tree but NOT deployed**, because rebuilding would
+  interrupt the running gym job. Levers not applied (operator's call): `OCR_DEVICE_SCALE=1` (4× fewer
+  pixels, lowers fallback-OCR quality), closing the debug Chrome's idle tabs, freeing RAM/CPU, giving
+  the Docker VM more resources, auto-requeueing interrupted jobs on boot instead of failing them.
+- **Host-runner auto-healing watchdog (2026-11-15, `scripts/host-watchdog.ps1`)**: reported as
+  "noon/AliExpress host runner hasn't checked in". Both runners, the debug Chrome and their launcher
+  windows had all vanished at the same moment with **no reboot, logoff or sleep** (checked: boot
+  time, session list, System event log) — the leading suspect is that I had launched them from my own
+  tool shell, so they lived in its process tree; **not proven**. Either way nothing supervised them,
+  so jobs would have queued forever. New supervisor `host-watchdog.ps1`, installed as the per-user
+  scheduled task `BusinessScoutHostWatchdog` by `scripts/install-host-watchdog.ps1` (logon trigger +
+  a 5-minute repeat that revives a dead watchdog, `IgnoreNew`, no time limit, restart-on-failure; no
+  admin needed; `-Uninstall` removes it). Every 30s per runner it: **restarts a missing runner**;
+  **restarts one that is alive but wedged** (heartbeat > 300s, after a 120s startup grace); **backs
+  off** after 5 starts in 10 min. Rules baked in: exact-command-line matching only (never blanket
+  `python.exe`/`chrome.exe`); never start a second copy of a live runner (startup orphan-recovery
+  would fail the first copy's in-flight job) — a mutex serialises passes and a start waits until the
+  process appears; an unknown heartbeat (docker/DB down) never kills anything. It supersedes the old
+  Startup-folder shortcut (removed — keeping both would double-start at logon); `start-all-hosts.bat`
+  is now just one idempotent watchdog pass; both launchers skip launching Chrome if :9222 already
+  answers (no stray tabs).
+  - **Heartbeat was dishonest during jobs, now fixed.** The noon runner heartbeat once per poll
+    *cycle* and a job runs inside the cycle, so for the whole length of a job (minutes) it was
+    silent — the banner cried "hasn't checked in" at a healthy busy runner, and a watchdog could not
+    tell busy from hung. New `chrome_health.heartbeat_forever` (an always-running task with its own DB
+    shim; only reports reachability, never relaunches Chrome so it can't race a job) is started by
+    `run_noon_host._watch`. (The property runner already had this via `_housekeeping_forever`.)
+    Measured during a real job: ages 2–39s against the 15s interval — far inside the 300s limit and
+    the banner's 90s.
+  - **A real bug found by testing the watchdog, not by reading it:** restarts failed with "launched
+    but no process appeared". The launcher's stdout was redirected to a fixed log file and the debug
+    Chrome inherited that handle and kept the file open for its whole life, so every relaunch's
+    redirect failed before the launcher ran. Fixed with one log file per launch
+    (`backend/worker/storage/logs/<runner>-host-<time>.log`, newest 8 kept).
+  - **Verified live:** the watchdog's parent chain is svchost (Task Scheduler), not this session;
+    killing both runners → both back in 13–14s, no duplicates; **suspending** the noon runner (alive,
+    not heartbeating) → detected as wedged and replaced in 6s with the frozen PIDs gone; killing the
+    watchdog itself (bypassing the scheduler) → Task Scheduler revived it after **302s** via the
+    5-minute repeat trigger (parent svchost), and the runners it had started **survived** its death
+    (same PIDs afterwards); `start-all-hosts.bat` run against live runners → identical PIDs, nothing
+    restarted or duplicated. Tests: 393 Python (+4 for `heartbeat_forever`, incl. "keeps beating while
+    a job runs"). Caveat: a runner restarted by the watchdog is not interactive — read its
+    `storage/logs/<runner>-host-<time>.log`, there is no console window.
+  - **Not covered / not verified:** the *logon* trigger was not exercised (needs a real logoff/logon);
+    a **wedged Chrome** (accepts the CDP socket but never finishes `connect_over_cdp`, seen once) is
+    not detected — the watchdog supervises runners, not Chrome's internals; the watchdog is a
+    Windows-only, same-machine supervisor (nothing helps if the whole machine is off).
 - **Known follow-up, not yet done**: `supabase/` (CLI config + old Lovable-era migrations) is dead
   weight left over from the original scaffold — the real schema is `db/migrations/*.sql` via
   node-pg-migrate. Safe to delete, just hasn't been done. Prod deployment target (which host, TLS

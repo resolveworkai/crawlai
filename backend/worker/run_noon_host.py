@@ -37,6 +37,7 @@ Results appear in the same frontend, indistinguishable from a container-run amaz
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
 from types import TracebackType
 from typing import Any
@@ -44,7 +45,11 @@ from typing import Any
 import psycopg
 from psycopg.rows import dict_row
 
-from business_scout_worker.chrome_health import ensure_chrome_running, write_heartbeat
+from business_scout_worker.chrome_health import (
+    ensure_chrome_running,
+    heartbeat_forever,
+    write_heartbeat,
+)
 from business_scout_worker.ecom import jobs as ecom_jobs
 from business_scout_worker.ecom import pipeline as ecom_pipeline
 from business_scout_worker.ecom.adapters import cdp_required_platforms
@@ -202,14 +207,34 @@ async def _watch(poll_seconds: float) -> None:
     jobs process without a manual run. Resilient — a transient DB/Chrome error in one cycle is
     logged and the loop continues (so a briefly-closed debug Chrome doesn't kill the watcher)."""
     logger.info("noon host WATCH mode starting", poll_seconds=poll_seconds)
-    while True:
-        try:
-            await _run()
-        except SystemExit:
-            raise  # config error (e.g. ECOM_CDP_URL unset) — genuinely fatal, don't loop on it
-        except Exception as exc:  # noqa: BLE001 - one bad cycle must not kill the watcher
-            logger.warning("watch cycle failed, will retry", error=str(exc))
-        await asyncio.sleep(poll_seconds)
+    # Heartbeat from a separate always-running task (own DB shim, so it never touches a job's
+    # connection): the once-per-cycle heartbeat in _run() goes silent for the whole duration of a
+    # job, which made a healthy busy runner look dead to the banner and to the watchdog.
+    settings = load_settings()
+    heartbeat: asyncio.Task[None] | None = None
+    heartbeat_pool: Any = None
+    if settings.ecom_cdp_url:
+        heartbeat_pool = _SyncPoolShim(settings.database_url)
+        await heartbeat_pool.open()
+        heartbeat = asyncio.create_task(
+            heartbeat_forever(heartbeat_pool, "noon", settings.ecom_cdp_url, poll_seconds)
+        )
+    try:
+        while True:
+            try:
+                await _run()
+            except SystemExit:
+                raise  # config error (e.g. ECOM_CDP_URL unset) — genuinely fatal, don't loop on it
+            except Exception as exc:  # noqa: BLE001 - one bad cycle must not kill the watcher
+                logger.warning("watch cycle failed, will retry", error=str(exc))
+            await asyncio.sleep(poll_seconds)
+    finally:
+        if heartbeat is not None:
+            heartbeat.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await heartbeat
+        if heartbeat_pool is not None:
+            await heartbeat_pool.close()
 
 
 def main() -> None:

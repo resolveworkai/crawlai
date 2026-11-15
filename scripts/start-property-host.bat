@@ -20,15 +20,22 @@ REM      this window open.
 set CHROME="C:\Program Files\Google\Chrome\Application\chrome.exe"
 if not exist %CHROME% set CHROME="C:\Program Files (x86)\Google\Chrome\Application\chrome.exe"
 
-echo Starting debug Chrome on http://127.0.0.1:9222 ...
-start "" %CHROME% ^
-  --remote-debugging-port=9222 ^
-  --user-data-dir="%TEMP%\noon-cdp-chrome" ^
-  --no-first-run ^
-  --no-default-browser-check ^
-  "https://dubai.dubizzle.com/en/property-for-sale/residential/apartment/"
-
-timeout /t 4 /nobreak >nul
+REM Re-runnable: scripts/host-watchdog.ps1 calls this whenever a runner has died, and the debug
+REM Chrome is usually still up. Launching it again would only open a stray extra tab, so skip
+REM the launch when the debug port already answers.
+curl -s -m 2 http://127.0.0.1:9222/json/version >nul 2>&1
+if errorlevel 1 (
+  echo Starting debug Chrome on http://127.0.0.1:9222 ...
+  start "" %CHROME% ^
+    --remote-debugging-port=9222 ^
+    --user-data-dir="%TEMP%\noon-cdp-chrome" ^
+    --no-first-run ^
+    --no-default-browser-check ^
+    "https://dubai.dubizzle.com/en/property-for-sale/residential/apartment/"
+  timeout /t 4 /nobreak >nul
+) else (
+  echo Debug Chrome already running on http://127.0.0.1:9222 - not launching another.
+)
 
 cd /d "%~dp0..\backend\worker"
 

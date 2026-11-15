@@ -7,6 +7,8 @@ a fake pool object mirroring the tiny async surface the real one uses.
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -16,6 +18,7 @@ from business_scout_worker.chrome_health import (
     _resolve_chrome_exe,
     _resolve_user_data_dir,
     ensure_chrome_running,
+    heartbeat_forever,
     is_cdp_reachable,
     write_heartbeat,
 )
@@ -193,3 +196,72 @@ async def test_write_heartbeat_never_raises_on_db_failure() -> None:
 
     # Must not raise — heartbeat writes are best-effort.
     await write_heartbeat(_RaisingPool(), "noon", cdp_reachable=False, last_error="x")
+
+
+# --- heartbeat_forever: keeps beating while the runner is busy -------------------------------
+
+
+async def _run_heartbeat_for(seconds: float) -> None:
+    task = asyncio.create_task(
+        heartbeat_forever(MagicMock(), "noon", "http://127.0.0.1:9222", 0.01)
+    )
+    await asyncio.sleep(seconds)
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+
+
+async def test_heartbeat_forever_keeps_beating_while_a_job_runs() -> None:
+    # The whole point: a noon job runs for minutes inside ONE poll cycle. The heartbeat is its own
+    # task, so it must keep ticking while the "job" (here a long await) is in progress.
+    write = AsyncMock()
+    with (
+        patch("business_scout_worker.chrome_health.is_cdp_reachable", AsyncMock(return_value=True)),
+        patch("business_scout_worker.chrome_health.write_heartbeat", write),
+    ):
+        await _run_heartbeat_for(0.15)  # the "job" is this 150ms await
+    assert write.await_count >= 5
+    for call in write.await_args_list:
+        assert call.args[1] == "noon"
+        assert call.kwargs == {"cdp_reachable": True, "last_error": None}
+
+
+async def test_heartbeat_forever_reports_unreachable_chrome_with_a_reason() -> None:
+    write = AsyncMock()
+    with (
+        patch(
+            "business_scout_worker.chrome_health.is_cdp_reachable", AsyncMock(return_value=False)
+        ),
+        patch("business_scout_worker.chrome_health.write_heartbeat", write),
+    ):
+        await _run_heartbeat_for(0.05)
+    assert write.await_count >= 1
+    assert write.await_args_list[0].kwargs == {
+        "cdp_reachable": False,
+        "last_error": "Chrome/CDP unreachable at last poll",
+    }
+
+
+async def test_heartbeat_forever_survives_a_failing_tick() -> None:
+    # A DB/network hiccup in one tick must not end the loop (monitoring never kills the runner).
+    write = AsyncMock(side_effect=[RuntimeError("db down"), None, None, None, None, None])
+    with (
+        patch("business_scout_worker.chrome_health.is_cdp_reachable", AsyncMock(return_value=True)),
+        patch("business_scout_worker.chrome_health.write_heartbeat", write),
+    ):
+        await _run_heartbeat_for(0.1)
+    assert write.await_count >= 3  # kept going after the first tick raised
+
+
+async def test_heartbeat_forever_never_relaunches_chrome() -> None:
+    # Relaunching stays with the between-jobs check; a tick must not race a running job over Chrome.
+    ensure = AsyncMock()
+    with (
+        patch(
+            "business_scout_worker.chrome_health.is_cdp_reachable", AsyncMock(return_value=False)
+        ),
+        patch("business_scout_worker.chrome_health.write_heartbeat", AsyncMock()),
+        patch("business_scout_worker.chrome_health.ensure_chrome_running", ensure),
+    ):
+        await _run_heartbeat_for(0.05)
+    ensure.assert_not_awaited()

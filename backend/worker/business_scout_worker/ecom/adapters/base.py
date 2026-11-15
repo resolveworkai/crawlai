@@ -51,6 +51,13 @@ class PlatformAdapter(ABC):
     # skipped by the containerized daemon (no Chrome there) and handled only by the host runner
     # (run_noon_host.py) with ECOM_CDP_URL set. See md/ECOM_CRAWL.md "noon.com requires CDP".
     REQUIRES_CDP: ClassVar[bool] = False
+    # Whether the capture loop scrolls each product card into view and screenshots it. The shots
+    # feed Stage B's OCR fallback and are a per-card visual audit trail. In a VISIBLE real Chrome
+    # (REQUIRES_CDP) every shot scrolls the page and flashes — measured on amazon.in: 0 reloads and
+    # a stable DOM, just scrolling + screenshots every ~1.5s, which the operator read as the page
+    # "refreshing" — and some cards stall 20-40s on Playwright's element-stability wait. A platform
+    # whose cards are fully DOM-sourced can turn this off: no audit PNGs, identical data.
+    CARD_SCREENSHOTS: ClassVar[bool] = True
 
     async def on_context_ready(self, context: BrowserContext) -> None:  # noqa: B027 - intentional optional no-op hook, not abstract
         """Runs ONCE right after the browser context is opened, before the first navigation.
@@ -72,6 +79,14 @@ class PlatformAdapter(ABC):
         """True if the current page is a CAPTCHA / robot-check / block wall. Checked at
         navigation and periodically mid-walk; the caller stops cleanly on True, never attempts to
         solve it."""
+
+    async def is_error_page(self, page: Page) -> bool:  # noqa: ARG002 - default ignores `page`
+        """True if the current page is the platform's transient "something went wrong" error page
+        (NOT a CAPTCHA — that's is_blocked). Checked only when a results page yielded zero cards:
+        such a page is indistinguishable from a genuinely empty search unless the adapter can
+        recognize it, and treating it as "no results" silently produces a finished job with 0
+        rows. Default False; adapters whose site is known to serve one (Amazon) override this."""
+        return False
 
     @abstractmethod
     async def extract_card(self, card: ElementHandle) -> DomProductFields:
